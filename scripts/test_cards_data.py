@@ -325,3 +325,39 @@ class ReactionsNotRenderedTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeGitHub:
+    """경로별로 정해 둔 응답을 돌려주는 최소 클라이언트. 값이 ApiError 면 그것을 던진다."""
+
+    def __init__(self, routes: dict[str, object]) -> None:
+        self.routes = routes
+        self.calls: list[str] = []
+
+    def get(self, path: str, params: dict | None = None):
+        self.calls.append(path)
+        resp = self.routes.get(path, cards_data.ApiError(f"HTTP 404 {path}: Not Found"))
+        if isinstance(resp, Exception):
+            raise resp
+        return resp, {}
+
+
+class LoadRemoteTests(unittest.TestCase):
+    """토큰이 저장소를 못 보면 GitHub 은 404 를 준다 — 그것을 '데이터 없음'으로 오해해 빈 사이트를 배포하지 않는다."""
+
+    def test_저장소가_안_보이면_오류로_올린다(self):
+        gh = FakeGitHub({})  # 모든 경로 404
+        with self.assertRaises(cards_data.ApiError) as cm:
+            cards_data.load_remote(gh, "org", "wiki", "main")
+        self.assertIn("ORG_READ_TOKEN", str(cm.exception))
+        self.assertIn("/repos/org/wiki", gh.calls)
+
+    def test_저장소는_보이고_폴더만_없으면_빈_목록(self):
+        gh = FakeGitHub({"/repos/org/wiki": {"name": "wiki"}})
+        self.assertEqual(cards_data.load_remote(gh, "org", "wiki", "main"), [])
+
+    def test_404_아닌_오류는_그대로_올린다(self):
+        gh = FakeGitHub({"/repos/org/wiki/contents/data/profiles": cards_data.ApiError("HTTP 401 x: Bad credentials")})
+        with self.assertRaises(cards_data.ApiError) as cm:
+            cards_data.load_remote(gh, "org", "wiki", "main")
+        self.assertIn("HTTP 401", str(cm.exception))
