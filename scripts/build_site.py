@@ -419,7 +419,9 @@ a.mem:hover{border-color:var(--brand70);color:var(--brand-ink)}
 .ek-report{background:var(--brand);border-color:var(--brand);color:#fff}
 .ek-due{background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)}
 .ek-event{background:var(--ok-soft);border-color:var(--ok-soft);color:var(--ok)}
-.evlabel{font-weight:700;color:var(--ink)}
+.ek-etc{background:var(--soft);border-color:var(--line);color:var(--muted)}
+.on{font-size:10.5px;font-weight:800;color:var(--brand-ink);white-space:nowrap}
+.evlabel{font-weight:700;color:var(--ink);flex:1 1 260px;min-width:0}
 .slist li.rec .evlabel{font-weight:600}
 .evmem{font-size:11.5px;background:var(--soft);border:1px solid var(--line);border-radius:999px;
   padding:2px 9px;color:var(--ink2);text-decoration:none;white-space:nowrap}
@@ -965,19 +967,29 @@ def schedule_html(events: list[dict[str, Any]], today: date, member_hrefs: dict[
         for e in items:
             kind = e["kind"]
             row = f'<span class="evtime">{esc(e["time"])}</span>' if e["time"] else ""
-            row += f'<span class="ek {EVENT_KIND_CLASS.get(kind, "")}">{esc(kind)}</span>'
+            row += f'<span class="ek {EVENT_KIND_CLASS.get(kind, "ek-etc")}">{esc(kind)}</span>'
             row += f'<span class="evlabel">{esc(e["label"])}</span>'
+            row += event_members_html(e["members"], member_hrefs)
+            if e["end"]:  # events_in_window 가 하루짜리는 이미 비워 준다 — 기간은 시작~끝을 다 적는다
+                row += f'<span class="evspan">{esc(fmt_day_str(day))}~{esc(fmt_day_str(e["end"]))}</span>'
+            if e.get("ongoing"):
+                row += '<span class="on">진행 중</span>'
             if e["recurring"]:
                 row += '<span class="evrepeat">매주</span>'
-            if e["end"]:  # events_in_window 가 하루짜리는 이미 비워 준다
-                row += f'<span class="evspan">~ {esc(fmt_day_str(e["end"]))}</span>'
-            row += event_members_html(e["members"], member_hrefs)
             if e["note"]:
                 row += f'<span class="evnote">{esc(e["note"])}</span>'
             lis.append(f'<li class="{"rec" if e["recurring"] else ""}">{row}</li>')
         head = f'<div class="sdate">{esc(fmt_day_str(day))}{_today_mark(day, today)}</div>'
         blocks.append(f'<div class="sday">{head}<ul class="slist">{"".join(lis)}</ul></div>')
     return f'<div class="card">{"".join(blocks)}</div>'
+
+
+def holiday_note(schedule: dict[str, Any] | None, start: date, end: date) -> str:
+    """창 안에 낀 휴일 — 업무일 계산에서 뺐다는 근거를 목록 아래 남긴다 (salesplus-cards 와 같다)."""
+    hs = sorted(h for h in str_list((schedule or {}).get("holidays")) if start.isoformat() <= h <= end.isoformat())
+    if not hs:
+        return ""
+    return f'<div class="note">휴무: {esc(" · ".join(fmt_day_str(h) for h in hs))} — 업무일 계산에서 뺐다.</div>'
 
 
 # ───────────────────────────────────────────────────────────────────── 목록·빌드
@@ -1030,8 +1042,9 @@ def render_index(
     )
     s_sched = sec(
         "sec-sched", f"업무일 {SCHEDULE_WINDOW_DAYS}일", "파트 일정",
-        schedule_html(events, today, member_hrefs),
-        f"{fmt_day(win_start)} ~ {fmt_day(win_end)} · 기준 {fmt_day(today)}",
+        schedule_html(events, today, member_hrefs) + holiday_note(schedule, win_start, win_end),
+        f"{fmt_day(win_start)} ~ {fmt_day(win_end)} · 업무일 {SCHEDULE_WINDOW_DAYS}일"
+        + (f" · 데이터 기준 {esc(text(schedule.get('generated')))}" if schedule and text(schedule.get("generated")) else ""),
     )
     if profiles:
         cards = f'<div class="cards">{"".join(member_card(d, member_hrefs[text(d.get("name"))]) for d in profiles)}</div>'
@@ -1050,7 +1063,7 @@ def render_index(
             f'<div class="warnbox skips"><h3>검증에서 건너뛴 파일 {len(skipped)}건</h3><ul>{items}</ul>'
             '<p style="margin-top:9px">한 건 때문에 전체가 막히지 않도록 그 파일만 빼고 빌드했다. 고치면 다음 빌드에 다시 들어온다.</p></div>'
         )
-    body = hero + banner_html() + '<main class="wrap">' + s_changes + s_sched + s_projects + s_members + skips + footer_html(part, built) + "</main>"
+    body = hero + banner_html() + '<main class="wrap">' + s_sched + s_projects + s_members + s_changes + skips + footer_html(part, built) + "</main>"
     return html_doc(f"{part} 멤버 프로필 · 프로젝트", body)
 
 

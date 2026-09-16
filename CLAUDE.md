@@ -8,7 +8,7 @@
   - 업무일 2일 창(`business_window`·`events_in_window`)과 최근 7일(`entries_within`)은 순수 함수다.
     part-wiki `scripts/part_schedule.py` 와 **같은 규칙**이어야 한다 — 어긋나면 사이트와 텔레그램 요약이 달라진다.
 - `scripts/build_site.py` — HTML 렌더링만. 표준 라이브러리, CSS 인라인, JS·CDN 없음. 모든 카드 문자열은 `esc()` 를 거친다.
-  - 목록 섹션 순서는 **최근 변경 → 파트 일정 → 프로젝트 → 멤버**. 프로젝트 앵커 `#projects` 는 유지한다.
+  - 목록 섹션 순서는 **파트 일정 → 프로젝트 → 멤버 → 최근 변경** (변경은 줄 수가 많아 맨 아래, 2026-09-16). 프로젝트 앵커 `#projects` 는 유지한다.
   - 기준일은 `render_index(..., today=)` 로 넣는다 (기본 KST 오늘). 테스트가 날짜를 고정하는 자리다.
   - 색상 토큰은 `CSS` 의 `:root` 에 있다. 대표색 `--brand:#F37321` 은 한화 CI 의 Hanwha Orange (70% `#F89B6C`, 50% `#FBB584`). 흰 바탕에 오렌지가 CI 원칙이라 라이트 모드가 기준이고, 다크는 `--brand:#FF8F45` 로 한 단계 밝힌다. 근거는 part-wiki `wiki/notes/파트-브랜드-색상.md`.
   - 작은 글자에는 `--brand` 대신 `--brand-ink` 를 쓴다 — 흰 바탕에서 `#F37321` 은 대비 3:1 미만이라 본문 텍스트용이 아니다.

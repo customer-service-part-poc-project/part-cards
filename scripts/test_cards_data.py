@@ -568,8 +568,15 @@ class EventsInWindowTests(unittest.TestCase):
     def test_정규화된_키를_돌려준다(self):
         e = cards_data.events_in_window(make_schedule(), THU)[0]
         self.assertEqual(
-            sorted(e), sorted(["date", "end", "time", "kind", "label", "members", "note", "recurring"])
+            sorted(e), sorted(["date", "end", "time", "kind", "label", "members", "note", "recurring", "ongoing"])
         )
+
+    def test_창_시작_전에_시작한_기간_일정은_진행_중이다(self):
+        sched = make_schedule()
+        sched["events"].append({"date": "2026-09-14", "end": "2026-09-20", "kind": "근태", "label": "휴가", "members": []})
+        got = {e["label"]: e for e in cards_data.events_in_window(sched, THU)}
+        self.assertTrue(got["휴가"]["ongoing"])
+        self.assertFalse(got["스크럼"]["ongoing"])
 
     def test_반복_여부가_표시된다(self):
         got = {label: e for (_, label), e in zip(self.labels(make_schedule(), THU), cards_data.events_in_window(make_schedule(), THU))}
@@ -623,7 +630,7 @@ class EntriesWithinTests(unittest.TestCase):
 
 
 class RenderIndexTests(unittest.TestCase):
-    """목록 페이지의 섹션 순서와 빈 상태. 바뀐 것과 곧 있을 일이 맨 위에 온다."""
+    """목록 페이지의 섹션 순서와 빈 상태. 곧 있을 일이 맨 위, 변경 이력은 맨 아래."""
 
     def _index(self, **kw):
         args = {
@@ -640,9 +647,9 @@ class RenderIndexTests(unittest.TestCase):
         args.update(kw)
         return build_site.render_index(**args)
 
-    def test_섹션_순서는_변경_일정_프로젝트_멤버(self):
+    def test_섹션_순서는_일정_프로젝트_멤버_변경(self):
         h = self._index()
-        order = [h.index(f"sec {cls}") for cls in ("sec-changes", "sec-sched", "sec-proj", "sec-members")]
+        order = [h.index(f"sec {cls}") for cls in ("sec-sched", "sec-proj", "sec-members", "sec-changes")]
         self.assertEqual(order, sorted(order))
 
     def test_히어로_칩에_건수가_붙는다(self):
@@ -662,7 +669,20 @@ class RenderIndexTests(unittest.TestCase):
         self.assertIn("<b>변경</b>0건", h)
 
     def test_창_범위를_부제에_적는다(self):
-        self.assertIn("9/17(목) ~ 9/18(금) · 기준 9/17(목)", self._index())
+        self.assertIn("9/17(목) ~ 9/18(금) · 업무일 2일", self._index())
+
+    def test_기간_일정은_시작과_끝을_다_적고_진행_중을_표시한다(self):
+        sched = make_schedule()
+        sched["events"].append({"date": "2026-09-15", "end": "2026-09-18", "kind": "근태", "label": "휴가", "members": []})
+        h = self._index(schedule=sched)
+        self.assertIn("9/15(화)~9/18(금)", h)
+        self.assertIn('<span class="on">진행 중</span>', h)
+
+    def test_창_안_휴일은_휴무로_적는다(self):
+        sched = make_schedule()
+        sched["holidays"] = ["2026-09-18"]
+        h = self._index(schedule=sched)
+        self.assertIn("휴무: 9/18(금)", h)
 
     def test_오늘_날짜_그룹에_오늘_표시(self):
         self.assertIn('<span class="today">오늘</span>', self._index())

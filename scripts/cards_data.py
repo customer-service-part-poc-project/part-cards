@@ -446,6 +446,7 @@ def _norm_event(e: dict[str, Any], day: str, end: str, recurring: bool) -> dict[
         "members": str_list(e.get("members")),
         "note": text(e.get("note")),
         "recurring": recurring,
+        "ongoing": False,
     }
 
 
@@ -473,7 +474,9 @@ def events_in_window(schedule: object, today: date, days: int = SCHEDULE_WINDOW_
         if not _valid_date(tail) or tail == day:
             tail = ""  # part_schedule.py 와 같게 — 하루짜리는 end 를 비운다
         if day <= e_iso and (tail or day) >= s_iso:
-            out.append(_norm_event(e, day, tail, recurring=False))
+            ev = _norm_event(e, day, tail, recurring=False)
+            ev["ongoing"] = day < s_iso  # 창 시작 전에 시작해 아직 안 끝난 기간 일정 — "진행 중" 표식용
+            out.append(ev)
 
     cur = start
     while cur <= end:
