@@ -4,6 +4,8 @@
 
 - `scripts/cards_data.py` — 적재(`load_local`·`load_remote`)와 스키마 검증.
 - `scripts/build_site.py` — HTML 렌더링만. 표준 라이브러리, CSS 인라인, JS·CDN 없음. 모든 카드 문자열은 `esc()` 를 거친다.
+  - 색상 토큰은 `CSS` 의 `:root` 에 있다. 대표색 `--brand:#F37321` 은 한화 CI 의 Hanwha Orange (70% `#F89B6C`, 50% `#FBB584`). 흰 바탕에 오렌지가 CI 원칙이라 라이트 모드가 기준이고, 다크는 `--brand:#FF8F45` 로 한 단계 밝힌다. 근거는 part-wiki `wiki/notes/파트-브랜드-색상.md`.
+  - 작은 글자에는 `--brand` 대신 `--brand-ink` 를 쓴다 — 흰 바탕에서 `#F37321` 은 대비 3:1 미만이라 본문 텍스트용이 아니다.
 - `scripts/test_cards_data.py` — 검증 규칙과 공개 범위 테스트. **커밋해서 유지한다** (워크플로가 빌드 전에 돌린다).
   `python3 -m unittest discover -s scripts -p 'test_*.py'`
 - **public 저장소·public 사이트다.** 위키 본문·대화 원문·조직 저장소 통계를 넣는 코드를 쓰지 않는다. 금지 패턴은 `cards_data.py` 의 `FORBIDDEN_*` · `forbidden_patterns()`.
