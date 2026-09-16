@@ -394,7 +394,9 @@ a.mem:hover{border-color:var(--brand70);color:var(--brand-ink)}
 .chtarget{font-weight:800;color:var(--ink)}
 .chtarget a{color:var(--brand-ink);font-weight:800;text-decoration:none;border-bottom:1px solid var(--brand-line)}
 .chtarget a:hover{border-bottom-color:var(--brand)}
-.chsum{color:var(--ink2);flex:1 1 240px;min-width:0}
+/* 신호 요약은 `발화 35→41건 · 평균 44→40자 · …` 로 길어진다 — 한글 낱말 안에서 끊지 않고
+   조각 사이 공백에서만 접는다 (keep-all). anywhere 는 공백 없는 긴 토큰을 위한 안전판. */
+.chsum{color:var(--ink2);flex:1 1 240px;min-width:0;word-break:keep-all;overflow-wrap:anywhere}
 .today{font-size:10.5px;font-weight:800;padding:2px 8px;border-radius:999px;background:var(--brand);color:#fff;
   letter-spacing:0}
 

@@ -672,6 +672,18 @@ class RenderIndexTests(unittest.TestCase):
         self.assertIn(build_site.href_for("p", make_project()), h)
         self.assertIn(build_site.href_for("m", make_profile()), h)
 
+    def test_프로필_변경은_사람마다_한_줄로_그려진다(self):
+        """뭉뚱그린 `김동준, 이강민 — 말투 신호 갱신` 대신 누구의 무엇이 움직였는지 보여야 한다."""
+        log = make_changelog()
+        log["entries"][1]["summary"] = "발화 35→41건 · 평균 44→40자 · 배지 확인요구 8.0배→단정 3.1배"
+        h = self._index(changelog=log)
+        self.assertIn(f'<a href="{build_site.href_for("m", make_profile())}">김동준</a>', h)
+        self.assertIn('<span class="chsum">발화 35→41건 · 평균 44→40자 · 배지 확인요구 8.0배→단정 3.1배</span>', h)
+
+    def test_긴_요약은_낱말_안에서_끊지_않는다(self):
+        """좁은 폭에서 `발화` 가 `발`/`화` 로 갈라지면 읽을 수 없다."""
+        self.assertIn("word-break:keep-all", self._index())
+
     def test_카드가_없는_이름은_링크하지_않는다(self):
         log = make_changelog()
         log["entries"][1]["target"] = "없는사람"
