@@ -361,3 +361,34 @@ class LoadRemoteTests(unittest.TestCase):
         with self.assertRaises(cards_data.ApiError) as cm:
             cards_data.load_remote(gh, "org", "wiki", "main")
         self.assertIn("HTTP 401", str(cm.exception))
+
+
+class MainApiErrorTests(unittest.TestCase):
+    """API 접근 실패는 체인 트레이스백이 아니라 한 줄 메시지로 끝난다 — 로그에서 원인이 바로 보여야 한다."""
+
+    def _run_main(self, *, actions: bool) -> SystemExit:
+        env = {"GH_TOKEN": "x", "GITHUB_ACTIONS": "true"} if actions else {"GH_TOKEN": "x"}
+        saved = {k: os.environ.pop(k, None) for k in ("GH_TOKEN", "GITHUB_ACTIONS")}
+        orig_load, orig_argv = build_site.load_remote, sys.argv
+        try:
+            os.environ.update(env)
+            build_site.load_remote = lambda *a, **k: (_ for _ in ()).throw(cards_data.ApiError("wiki 를 읽을 수 없다 (HTTP 404)"))
+            sys.argv = ["build_site.py", "--out", "/nonexistent/should-not-be-created"]
+            with self.assertRaises(SystemExit) as cm:
+                build_site.main()
+            return cm.exception
+        finally:
+            build_site.load_remote, sys.argv = orig_load, orig_argv
+            for k, v in saved.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
+
+    def test_actions_에서는_error_주석으로_올린다(self):
+        e = self._run_main(actions=True)
+        self.assertEqual(e.code, "::error::wiki 를 읽을 수 없다 (HTTP 404)")
+        self.assertIsNone(e.__cause__)
+
+    def test_로컬에서는_오류_접두어(self):
+        e = self._run_main(actions=False)
+        self.assertEqual(e.code, "오류: wiki 를 읽을 수 없다 (HTTP 404)")

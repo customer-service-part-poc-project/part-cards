@@ -31,6 +31,7 @@ from urllib.parse import quote
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from cards_data import (  # noqa: E402
     AXES,
+    ApiError,
     BANNER,
     DEFAULT_PART,
     FUN_KEYS,
@@ -886,7 +887,11 @@ def main() -> None:
         token = os.environ.get("GH_TOKEN")
         if not token:
             raise SystemExit("GH_TOKEN 이 없습니다 (ORG_READ_TOKEN). 토큰 없이 확인하려면 --local DIR")
-        cards = load_remote(GitHub(token), org, repo, ref)
+        try:
+            cards = load_remote(GitHub(token), org, repo, ref)
+        except ApiError as e:
+            # 트레이스백 대신 한 줄로. Actions 에서는 ::error:: 로 올려 실행 요약에 바로 보이게 한다.
+            raise SystemExit(f"::error::{e}" if os.environ.get("GITHUB_ACTIONS") else f"오류: {e}") from None
     for c in cards:
         if not c.ok:
             warn(f"건너뜀 {c.file}: " + " / ".join(c.errors))

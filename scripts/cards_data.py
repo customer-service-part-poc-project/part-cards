@@ -86,7 +86,8 @@ class GitHub:
                 if (e.code >= 500 or rate_limited) and attempt < 3:
                     time.sleep(2**attempt)
                     continue
-                body = e.read().decode("utf-8", errors="replace")[:300]
+                # 한 줄로 접는다 — ::error:: 주석은 첫 줄만 보여 준다.
+                body = " ".join(e.read().decode("utf-8", errors="replace").split())[:300]
                 raise ApiError(f"HTTP {e.code} {path}: {body}") from e
             except (urllib.error.URLError, TimeoutError) as e:
                 if attempt < 3:
