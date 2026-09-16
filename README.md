@@ -15,8 +15,8 @@ part-wiki/data/profiles/*.json ─┐
 part-wiki/data/projects/*.json ─┴→ cards_data.py (검증) → build_site.py → _site/ → GitHub Pages
 ```
 
-`.github/workflows/pages.yml` 이 평일 매시간(09~19시 KST), 매일 09:20 KST, 수동 실행(Actions → Run workflow), part-wiki 의 `wiki-data-updated` 신호,
-`scripts/` 변경 push 때 돈다. 빌드 전에 `scripts/test_*.py` 를 먼저 돌린다.
+`.github/workflows/pages.yml` 은 part-wiki 가 보내는 `wiki-data-updated` 신호를 받으면 돈다 — 카드 데이터가 바뀐 순간에만 다시 그린다.
+그 밖에 매일 09:37 KST 안전망, 수동 실행(Actions → Run workflow), `scripts/` 변경 push 때도 돈다. 빌드 전에 `scripts/test_*.py` 를 먼저 돌린다.
 
 ## 처음 설정 (한 번만)
 
@@ -24,7 +24,9 @@ part-wiki/data/projects/*.json ─┴→ cards_data.py (검증) → build_site.p
    (fine-grained PAT, Resource owner = 조직, 저장소 `part-wiki`, **Contents: Read**).
 2. **Pages** — Settings → Pages → Build and deployment → Source = **GitHub Actions**.
 3. (선택) **`CARDS_FORBIDDEN_NAMES`** 시크릿 — 카드에 실리면 안 되는 이름을 쉼표로 구분해 넣는다. 이 저장소는 public 이라 코드에 이름을 두지 않는다. 비워 두면 이름 검사만 건너뛴다.
-4. (선택) part-wiki 의 `CARDS_DISPATCH_TOKEN` 에 이 저장소 **Contents: Read and write** 를 주면 데이터 변경 즉시 반영된다. 없어도 매일 돈다.
+4. **part-wiki 의 `CARDS_DISPATCH_TOKEN`** — fine-grained PAT, Resource owner = 조직, 저장소 `part-cards`,
+   **Contents: Read and write**. 데이터 변경을 즉시 반영하는 주 경로다. 없거나 만료되면 하루 1회 안전망으로만 갱신된다.
+   만료되면 part-wiki 의 `notify-cards.yml` 이 실패해 빨간불로 알려 준다.
 
 ## 무엇이 나가나
 
