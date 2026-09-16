@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""part-wiki 의 data/profiles·data/projects 로 GitHub Pages 용 정적 사이트를 만든다.
+"""part-wiki 의 data/ 카드 JSON 으로 GitHub Pages 용 정적 사이트를 만든다.
 
     python3 scripts/build_site.py --out _site --local ../part-wiki   # 토큰 없이 옆 클론으로
     GH_TOKEN=<PAT> python3 scripts/build_site.py --out _site         # Contents API 로 (워크플로)
@@ -11,9 +11,12 @@
 카드 JSON 화이트리스트만 빌드한다 (part-wiki/docs/PRIVACY.md). 검색 엔진 색인은 noindex 로 막는다.
 이모지 반응 집계는 스키마에 있어도 싣지 않는다.
 
+목록 페이지의 섹션 순서는 **최근 변경 → 파트 일정 → 프로젝트 → 멤버** 다.
+바뀐 것과 곧 있을 일이 맨 위에 오고, 잘 안 바뀌는 카드가 아래로 간다.
+
 표준 라이브러리만 쓴다. CSS 는 인라인이라 file:// 로 열어도 그대로 보인다.
 한 건이 스키마에 어긋나면 그 파일만 건너뛰고 index 하단에 사유를 남긴다.
-프로필·프로젝트가 0건이어도 사이트는 만들어진다 (빈 상태 문구만 찍힌다).
+카드가 0건이어도 사이트는 만들어진다 (빈 상태 문구만 찍힌다).
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ import html
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -33,14 +36,19 @@ from cards_data import (  # noqa: E402
     AXES,
     ApiError,
     BANNER,
+    CHANGELOG_KEEP_DAYS,
     DEFAULT_PART,
     FUN_KEYS,
     KST,
     MILESTONE_STATES,
     PROJECT_STATUS_ORDER,
+    SCHEDULE_WINDOW_DAYS,
     Card,
     GitHub,
     badge_short,
+    business_window,
+    entries_within,
+    events_in_window,
     load_local,
     load_remote,
     num,
@@ -73,6 +81,20 @@ SIGNAL_ROWS = (
     ("confidence", "신뢰도", ""),
 )
 CHAT_GAP_RATIO = 2.0
+
+WEEKDAY_KO = ("월", "화", "수", "목", "금", "토", "일")
+CHANGE_CARD_KO = {"profile": "멤버", "project": "프로젝트", "schedule": "일정", "site": "사이트"}
+CHANGE_CARD_CLASS = {"profile": "ck-profile", "project": "ck-project", "schedule": "ck-sched", "site": "ck-site"}
+EVENT_KIND_CLASS = {
+    "회의": "ek-meet",
+    "근태": "ek-att",
+    "보고": "ek-report",
+    "행사": "ek-event",
+    "마감": "ek-due",
+    "기타": "ek-etc",
+}
+CHANGES_EMPTY = f"최근 {CHANGELOG_KEEP_DAYS}일간 바뀐 카드가 없다"
+SCHEDULE_EMPTY = f"업무일 {SCHEDULE_WINDOW_DAYS}일 안에 잡힌 일정이 없다"
 
 
 # ───────────────────────────────────────────────────────────────────────── 유틸
@@ -353,6 +375,57 @@ a.mem:hover{border-color:var(--brand70);color:var(--brand-ink)}
 .mem.noprofile{opacity:.7}
 .recent td.d{white-space:nowrap;font-variant-numeric:tabular-nums;color:var(--muted);width:1%}
 
+/* 최근 변경 — 목록의 첫 섹션. 브랜드 톤 카드로 눈에 띄게 (작은 글자는 --brand-ink) */
+.sec-changes{color:var(--ink);margin-top:28px}
+.sec-changes .sectag{background:var(--brand);color:#fff}
+.chcard{background:var(--brand-soft);border-color:var(--brand-line)}
+.chday+.chday{margin-top:14px;padding-top:14px;border-top:1px solid var(--brand-line)}
+.chdate{display:flex;align-items:baseline;gap:8px;font-size:12.5px;font-weight:800;color:var(--brand-ink);
+  margin-bottom:9px;font-variant-numeric:tabular-nums}
+.chlist{list-style:none;padding:0;margin:0}
+.chlist li{display:flex;flex-wrap:wrap;align-items:baseline;gap:9px;margin:0 0 9px;font-size:13.5px;line-height:1.55}
+.chlist li:last-child{margin-bottom:0}
+.ck{font-size:11px;font-weight:800;padding:2px 9px;border-radius:999px;white-space:nowrap;
+  background:var(--card);border:1px solid var(--brand-line);color:var(--brand-ink)}
+.ck-profile{border-color:var(--fun-line);color:var(--fun)}
+.ck-project{background:var(--brand);border-color:var(--brand);color:#fff}
+.ck-sched{border-style:dashed}
+.ck-site{border-color:var(--line);color:var(--muted)}
+.chtarget{font-weight:800;color:var(--ink)}
+.chtarget a{color:var(--brand-ink);font-weight:800;text-decoration:none;border-bottom:1px solid var(--brand-line)}
+.chtarget a:hover{border-bottom-color:var(--brand)}
+.chsum{color:var(--ink2);flex:1 1 240px;min-width:0}
+.today{font-size:10.5px;font-weight:800;padding:2px 8px;border-radius:999px;background:var(--brand);color:#fff;
+  letter-spacing:0}
+
+/* 파트 일정 */
+.sec-sched{color:var(--ink);margin-top:36px}
+.sec-sched .sectag{background:var(--brand-soft);color:var(--brand-ink)}
+.sday+.sday{margin-top:15px;padding-top:15px;border-top:1px solid var(--line2)}
+.sdate{display:flex;align-items:baseline;gap:8px;font-size:13px;font-weight:800;color:var(--ink);
+  margin-bottom:9px;font-variant-numeric:tabular-nums}
+.slist{list-style:none;padding:0;margin:0}
+.slist li{display:flex;flex-wrap:wrap;align-items:baseline;gap:9px;margin:0 0 10px;font-size:13.5px;line-height:1.55}
+.slist li:last-child{margin-bottom:0}
+.slist li.rec{color:var(--ink2)}
+.evtime{font-variant-numeric:tabular-nums;font-weight:800;color:var(--brand-ink);font-size:12.5px;
+  min-width:44px;white-space:nowrap}
+.ek{font-size:11px;font-weight:800;padding:2px 9px;border-radius:999px;white-space:nowrap;
+  background:var(--soft);border:1px solid var(--line);color:var(--ink2)}
+.ek-meet{background:var(--brand-soft);border-color:var(--brand-line);color:var(--brand-ink)}
+.ek-att{background:var(--fun-soft);border-color:var(--fun-line);color:var(--fun)}
+.ek-report{background:var(--brand);border-color:var(--brand);color:#fff}
+.ek-due{background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)}
+.ek-event{background:var(--ok-soft);border-color:var(--ok-soft);color:var(--ok)}
+.evlabel{font-weight:700;color:var(--ink)}
+.slist li.rec .evlabel{font-weight:600}
+.evmem{font-size:11.5px;background:var(--soft);border:1px solid var(--line);border-radius:999px;
+  padding:2px 9px;color:var(--ink2);text-decoration:none;white-space:nowrap}
+a.evmem:hover{border-color:var(--brand70);color:var(--brand-ink)}
+.evrepeat{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:999px;border:1px dashed var(--line);
+  color:var(--muted);white-space:nowrap}
+.evspan,.evnote{font-size:12.5px;color:var(--muted)}
+
 /* 관측 신호 접기 */
 details.sig{margin-top:36px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:0 20px}
 details.sig>summary{cursor:pointer;padding:15px 0;font-size:13.5px;font-weight:700;color:var(--ink2);list-style:none}
@@ -402,6 +475,8 @@ footer{margin-top:52px;padding-top:20px;border-top:1px solid var(--line);font-si
   .card,.talk,.mcard,.pcard{padding:16px}
   .secsub{margin-left:0;width:100%}
   .ms .d{display:block;min-width:0;margin:0}
+  .chsum,.evlabel{flex:1 1 100%}
+  .evtime{min-width:0}
 }
 """
 
@@ -805,30 +880,164 @@ def project_card(d: dict[str, Any], href: str, member_hrefs: dict[str, str] | No
     return f'<a class="pcard" href="{esc(href)}">{main}{aside}</a>'
 
 
+# ─────────────────────────────────────────────────────── 최근 변경 · 파트 일정
+
+
+def parse_day(s: object) -> date | None:
+    try:
+        return date.fromisoformat(text(s))
+    except ValueError:
+        return None
+
+
+def fmt_day(d: date) -> str:
+    """`9/17(목)` — 목록에서 날짜를 한 눈에 세게."""
+    return f"{d.month}/{d.day}({WEEKDAY_KO[d.weekday()]})"
+
+
+def fmt_day_str(s: object) -> str:
+    d = parse_day(s)
+    return fmt_day(d) if d else text(s)
+
+
+def _group_by_date(items: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
+    """정렬된 목록을 날짜별로 묶는다 (정렬 순서를 그대로 지킨다)."""
+    groups: list[tuple[str, list[dict[str, Any]]]] = []
+    for it in items:
+        if groups and groups[-1][0] == it["date"]:
+            groups[-1][1].append(it)
+        else:
+            groups.append((it["date"], [it]))
+    return groups
+
+
+def _today_mark(day: str, today: date) -> str:
+    return '<span class="today">오늘</span>' if day == today.isoformat() else ""
+
+
+def change_targets_html(kind: str, target: str, hrefs: dict[str, dict[str, str]]) -> str:
+    """바뀐 카드 이름. 프로필·프로젝트 카드가 있으면 상세로 잇는다 (쉼표로 여러 개)."""
+    names = [t.strip() for t in target.split(",") if t.strip()]
+    if not names:
+        return ""
+    table = hrefs.get(kind, {})
+    parts = []
+    for n in names:
+        href = table.get(n)
+        parts.append(f'<a href="{esc(href)}">{esc(n)}</a>' if href else esc(n))
+    return f'<span class="chtarget">{" · ".join(parts)}</span>'
+
+
+def changes_html(entries: list[dict[str, Any]], today: date, hrefs: dict[str, dict[str, str]]) -> str:
+    if not entries:
+        return card("", f'<p class="empty">{esc(CHANGES_EMPTY)}</p>')
+    blocks = []
+    for day, items in _group_by_date(entries):
+        lis = []
+        for it in items:
+            kind = it["card"]
+            chip = f'<span class="ck {CHANGE_CARD_CLASS.get(kind, "")}">{esc(CHANGE_CARD_KO.get(kind, kind))}</span>'
+            lis.append(
+                f"<li>{chip}{change_targets_html(kind, it['target'], hrefs)}"
+                f'<span class="chsum">{esc(it["summary"])}</span></li>'
+            )
+        head = f'<div class="chdate">{esc(fmt_day_str(day))}{_today_mark(day, today)}</div>'
+        blocks.append(f'<div class="chday">{head}<ul class="chlist">{"".join(lis)}</ul></div>')
+    return f'<div class="card chcard">{"".join(blocks)}</div>'
+
+
+def event_members_html(names: list[str], member_hrefs: dict[str, str]) -> str:
+    chips = []
+    for n in names:
+        href = member_hrefs.get(n)
+        chips.append(f'<a class="evmem" href="{esc(href)}">{esc(n)}</a>' if href else f'<span class="evmem">{esc(n)}</span>')
+    return "".join(chips)
+
+
+def schedule_html(events: list[dict[str, Any]], today: date, member_hrefs: dict[str, str]) -> str:
+    if not events:
+        return card("", f'<p class="empty">{esc(SCHEDULE_EMPTY)}</p>')
+    blocks = []
+    for day, items in _group_by_date(events):
+        lis = []
+        for e in items:
+            kind = e["kind"]
+            row = f'<span class="evtime">{esc(e["time"])}</span>' if e["time"] else ""
+            row += f'<span class="ek {EVENT_KIND_CLASS.get(kind, "")}">{esc(kind)}</span>'
+            row += f'<span class="evlabel">{esc(e["label"])}</span>'
+            if e["recurring"]:
+                row += '<span class="evrepeat">매주</span>'
+            if e["end"]:  # events_in_window 가 하루짜리는 이미 비워 준다
+                row += f'<span class="evspan">~ {esc(fmt_day_str(e["end"]))}</span>'
+            row += event_members_html(e["members"], member_hrefs)
+            if e["note"]:
+                row += f'<span class="evnote">{esc(e["note"])}</span>'
+            lis.append(f'<li class="{"rec" if e["recurring"] else ""}">{row}</li>')
+        head = f'<div class="sdate">{esc(fmt_day_str(day))}{_today_mark(day, today)}</div>'
+        blocks.append(f'<div class="sday">{head}<ul class="slist">{"".join(lis)}</ul></div>')
+    return f'<div class="card">{"".join(blocks)}</div>'
+
+
 # ───────────────────────────────────────────────────────────────────── 목록·빌드
 
 
-def render_index(profiles: list[dict[str, Any]], projects: list[dict[str, Any]], skipped: list[Card], part: str, built: str, generated: str) -> str:
-    chips = [f'<span class="chip"><b>멤버</b>{len(profiles)}명</span>', f'<span class="chip"><b>프로젝트</b>{len(projects)}건</span>', f'<span class="chip"><b>빌드</b>{esc(built)}</span>']
+def render_index(
+    profiles: list[dict[str, Any]],
+    projects: list[dict[str, Any]],
+    skipped: list[Card],
+    part: str,
+    built: str,
+    generated: str,
+    schedule: dict[str, Any] | None = None,
+    changelog: dict[str, Any] | None = None,
+    today: date | None = None,
+) -> str:
+    """목록 페이지. 섹션 순서는 최근 변경 → 파트 일정 → 프로젝트 → 멤버.
+
+    `today` 는 업무일 2일 창과 최근 7일 창의 기준일이다 (기본 KST 오늘). 테스트가 날짜를 고정한다.
+    """
+    today = today or datetime.now(KST).date()
+    member_hrefs = {text(d.get("name")): href_for("m", d) for d in profiles}
+    project_hrefs = {text(d.get("name")): href_for("p", d) for d in projects}
+    events = events_in_window(schedule, today) if schedule else []
+    changes = entries_within(changelog, today) if changelog else []
+    win_start, win_end = business_window(today, str_list((schedule or {}).get("holidays")))
+
+    chips = [f'<span class="chip"><b>멤버</b>{len(profiles)}명</span>', f'<span class="chip"><b>프로젝트</b>{len(projects)}건</span>']
+    chips.append(f'<span class="chip"><b>일정</b>{len(events)}건</span>')
+    chips.append(f'<span class="chip"><b>변경</b>{len(changes)}건</span>')
+    chips.append(f'<span class="chip"><b>빌드</b>{esc(built)}</span>')
     if generated:
         chips.append(f'<span class="chip"><b>데이터 기준</b>{esc(generated)}</span>')
     low_n = sum(1 for d in profiles if text(sub(d, "signals").get("confidence")) == "낮음")
     if low_n:
         chips.append(f'<span class="chip"><b>표본 부족</b>{low_n}명</span>')
     hero = (
-        '<header class="hero"><span class="tri" aria-hidden="true"></span><div class="in"><div class="hero-eyebrow">멤버 프로필 · 프로젝트</div>'
+        '<header class="hero"><span class="tri" aria-hidden="true"></span><div class="in">'
+        '<div class="hero-eyebrow">최근 변경 · 파트 일정 · 프로젝트 · 멤버</div>'
         f'<h1 class="hero-title">{esc(part)}</h1>'
-        '<div class="hero-sub">파트 텔레그램 방에서 집계한 말투 신호로 만든 파트원 카드와 진행 중인 과제 요약. '
+        f"<div class=\"hero-sub\">최근 {CHANGELOG_KEEP_DAYS}일간 바뀐 카드와 업무일 {SCHEDULE_WINDOW_DAYS}일 안의 파트 일정, "
+        "진행 중인 과제 요약, 파트 텔레그램 방에서 집계한 말투 신호로 만든 파트원 카드. "
         "위키 본문과 원본 대화는 여기에 실리지 않는다.</div>"
         f'<div class="hero-chips">{"".join(chips)}</div></div></header>'
     )
+    s_changes = sec(
+        "sec-changes", f"{CHANGELOG_KEEP_DAYS}일", "최근 변경",
+        changes_html(changes, today, {"profile": member_hrefs, "project": project_hrefs}),
+        "카드가 언제 무엇 때문에 바뀌었나",
+    )
+    s_sched = sec(
+        "sec-sched", f"업무일 {SCHEDULE_WINDOW_DAYS}일", "파트 일정",
+        schedule_html(events, today, member_hrefs),
+        f"{fmt_day(win_start)} ~ {fmt_day(win_end)} · 기준 {fmt_day(today)}",
+    )
     if profiles:
-        cards = f'<div class="cards">{"".join(member_card(d, href_for("m", d)) for d in profiles)}</div>'
+        cards = f'<div class="cards">{"".join(member_card(d, member_hrefs[text(d.get("name"))]) for d in profiles)}</div>'
     else:
         cards = card("", '<p class="empty" style="margin:0">아직 프로필 카드가 없다. 동기화로 신호가 쌓인 뒤 part-wiki 의 data/profiles/ 에 채운다.</p>')
     s_members = sec("sec-members", "관측 신호", "멤버", cards, "카드를 누르면 상세로")
     if projects:
-        pcards = f'<div class="pcards">{"".join(project_card(d, href_for("p", d)) for d in projects)}</div>'
+        pcards = f'<div class="pcards">{"".join(project_card(d, project_hrefs[text(d.get("name"))]) for d in projects)}</div>'
     else:
         pcards = card("", '<p class="empty" style="margin:0">아직 프로젝트 카드가 없다. part-wiki 의 data/projects/ 에 채운다.</p>')
     s_projects = '<div id="projects"></div>' + sec("sec-proj", "위키 요약", "프로젝트", pcards, "진행률은 마일스톤 완료 수 · 확정 계획이 아니다")
@@ -839,7 +1048,7 @@ def render_index(profiles: list[dict[str, Any]], projects: list[dict[str, Any]],
             f'<div class="warnbox skips"><h3>검증에서 건너뛴 파일 {len(skipped)}건</h3><ul>{items}</ul>'
             '<p style="margin-top:9px">한 건 때문에 전체가 막히지 않도록 그 파일만 빼고 빌드했다. 고치면 다음 빌드에 다시 들어온다.</p></div>'
         )
-    body = hero + banner_html() + '<main class="wrap">' + s_members + s_projects + skips + footer_html(part, built) + "</main>"
+    body = hero + banner_html() + '<main class="wrap">' + s_changes + s_sched + s_projects + s_members + skips + footer_html(part, built) + "</main>"
     return html_doc(f"{part} 멤버 프로필 · 프로젝트", body)
 
 
@@ -854,10 +1063,14 @@ def _project_key(d: dict[str, Any]) -> tuple[int, float, str]:
 def build(cards: list[Card], out_dir: Path) -> None:
     profiles = sorted([c.data for c in cards if c.ok and c.kind == "profile" and c.data is not None], key=lambda d: text(d.get("name")))
     projects = sorted([c.data for c in cards if c.ok and c.kind == "project" and c.data is not None], key=_project_key)
+    schedule = next((c.data for c in cards if c.ok and c.kind == "schedule" and c.data is not None), None)
+    changelog = next((c.data for c in cards if c.ok and c.kind == "changelog" and c.data is not None), None)
     skipped = [c for c in cards if not c.ok]
     part = next((text(d.get("part")) for d in profiles + projects if text(d.get("part"))), DEFAULT_PART)
     generated = max((text(d.get("generated")) for d in profiles + projects), default="")
-    built = datetime.now(KST).strftime("%Y-%m-%d %H:%M KST")
+    now = datetime.now(KST)
+    built = now.strftime("%Y-%m-%d %H:%M KST")
+    today = now.date()
 
     member_hrefs = {text(d.get("name")): href_for("m", d) for d in profiles}
     (out_dir / "m").mkdir(parents=True, exist_ok=True)
@@ -866,9 +1079,16 @@ def build(cards: list[Card], out_dir: Path) -> None:
         (out_dir / "m" / f"{text(d.get('name'))}.html").write_text(render_person(d, built), encoding="utf-8")
     for d in projects:
         (out_dir / "p" / f"{text(d.get('name'))}.html").write_text(render_project(d, built, member_hrefs), encoding="utf-8")
-    (out_dir / "index.html").write_text(render_index(profiles, projects, skipped, part, built, generated), encoding="utf-8")
+    index = render_index(profiles, projects, skipped, part, built, generated, schedule, changelog, today)
+    (out_dir / "index.html").write_text(index, encoding="utf-8")
     (out_dir / ".nojekyll").write_text("", encoding="utf-8")  # Jekyll 후처리 방지
-    print(f"{out_dir}/index.html 생성 — 멤버 {len(profiles)}명 · 프로젝트 {len(projects)}건 · 건너뜀 {len(skipped)}건", file=sys.stderr)
+    n_events = len(events_in_window(schedule, today)) if schedule else 0
+    n_changes = len(entries_within(changelog, today)) if changelog else 0
+    print(
+        f"{out_dir}/index.html 생성 — 멤버 {len(profiles)}명 · 프로젝트 {len(projects)}건 · "
+        f"일정 {n_events}건 · 변경 {n_changes}건 · 건너뜀 {len(skipped)}건",
+        file=sys.stderr,
+    )
 
 
 def main() -> None:

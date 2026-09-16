@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""part-wiki 의 data/profiles·data/projects 를 읽고 스키마를 검증한다 (build_site.py 가 쓴다).
+"""part-wiki 의 data/ 카드 JSON 을 읽고 스키마를 검증한다 (build_site.py 가 쓴다).
 
-데이터는 part-wiki(private) 의 `data/profiles/*.json` · `data/projects/*.json` 이다.
+데이터는 part-wiki(private) 의 네 종류다.
+
+    data/profiles/*.json   사람 카드            docs/PROFILE_SCHEMA.md
+    data/projects/*.json   과제 카드            docs/PROJECT_SCHEMA.md
+    data/schedule.json     파트 일정 (한 파일)   docs/SCHEDULE_SCHEMA.md
+    data/changelog.json    최근 변경 (한 파일)   docs/CHANGELOG_SCHEMA.md
+
 위키 본문(projects/·members/·raw/)은 읽지 않는다 — 카드는 사람이 공개 범위를 골라 다시 쓴 요약이다.
-스키마·공개 범위는 그 저장소의 docs/PROFILE_SCHEMA.md · docs/PROJECT_SCHEMA.md · docs/PRIVACY.md.
+공개 범위는 그 저장소의 docs/PRIVACY.md.
 
 환경변수
   GH_TOKEN               part-wiki 를 읽을 PAT — ORG_READ_TOKEN (Contents: Read)
@@ -15,7 +21,10 @@
 설계
 - 표준 라이브러리만 사용한다.
 - 카드 한 건이 스키마에 어긋나면 **그 파일만 건너뛰고** 사유를 남긴다. 한 사람의 실수로
-  전체 카드가 사라지지 않게.
+  전체 카드가 사라지지 않게. 일정·변경은 파일이 하나라 그 섹션만 빠진다.
+- `schedule.json`·`changelog.json` 은 **없어도 정상**이다 (경고 없이 그 섹션만 비운다).
+- 업무일 2일 창 계산(`business_window`·`events_in_window`)은 part-wiki 의 `scripts/part_schedule.py`
+  와 같은 규칙이다. 한쪽을 고치면 다른 쪽도 고친다 — 어긋나면 사이트와 텔레그램 요약이 달라진다.
 - 이 저장소는 public 이다. 카드에 실으면 안 되는 이름은 코드가 아니라 `CARDS_FORBIDDEN_NAMES`
   시크릿에 둔다 — 소스에 실명을 적지 않는다.
 """
@@ -35,7 +44,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import timedelta, timezone
+from datetime import date, timedelta, timezone
 from email.message import Message
 
 API = "https://api.github.com"
@@ -157,6 +166,14 @@ PROJECT_STATUSES = ("준비", "진행중", "보류", "완료")
 PROJECT_STATUS_ORDER = {"진행중": 0, "준비": 1, "보류": 2, "완료": 3}
 MILESTONE_STATES = ("done", "doing", "todo")
 
+# 일정·변경 (docs/SCHEDULE_SCHEMA.md · docs/CHANGELOG_SCHEMA.md)
+EVENT_KINDS = ("회의", "근태", "보고", "행사", "마감", "기타")
+CHANGE_CARDS = ("profile", "project", "schedule", "site")
+DATE_RX = re.compile(r"^\d{4}-\d{2}-\d{2}$")  # 날짜 비교를 문자열로 하므로 형식이 어긋나면 받지 않는다
+SCHEDULE_WINDOW_DAYS = 2  # 업무일 2일
+CHANGELOG_KEEP_DAYS = 7
+_WINDOW_SCAN_LIMIT = 400  # 휴일이 잘못 채워져도 무한 루프에 빠지지 않게
+
 
 # ───────────────────────────────────────────────────────────────────────── 유틸
 
@@ -202,10 +219,26 @@ def scan_forbidden_keys(node: object, path: str = "$") -> list[str]:
     return hits
 
 
-def _common_errors(data: dict[str, Any], stem: str) -> list[str]:
-    errors: list[str] = []
+def _version_errors(data: dict[str, Any]) -> list[str]:
     if data.get("schema_version") != SCHEMA_VERSION:
-        errors.append(f"schema_version: {SCHEMA_VERSION} 이어야 합니다 (현재 {data.get('schema_version')!r})")
+        return [f"schema_version: {SCHEMA_VERSION} 이어야 합니다 (현재 {data.get('schema_version')!r})"]
+    return []
+
+
+def _privacy_errors(data: dict[str, Any]) -> list[str]:
+    """모든 카드가 함께 타는 공개 범위 검사 — 금지 키와 금지 패턴 (docs/PRIVACY.md)."""
+    errors = [f"금지 키: {p} — 원문 인용·성별 추정은 넣지 않습니다 (docs/PRIVACY.md)" for p in scan_forbidden_keys(data)]
+    blob = json.dumps(data, ensure_ascii=False)
+    for label, rx in forbidden_patterns():
+        m = rx.search(blob)
+        if m:
+            errors.append(f"금지 패턴({label}): {m.group(0)[:24]} — docs/PRIVACY.md")
+    return errors
+
+
+def _common_errors(data: dict[str, Any], stem: str) -> list[str]:
+    """파일 하나가 카드 하나인 프로필·프로젝트용 — `name` 이 파일명과 같아야 한다."""
+    errors = _version_errors(data)
     name = data.get("name")
     if not isinstance(name, str) or not name.strip():
         errors.append("name: 비어 있습니다")
@@ -213,14 +246,7 @@ def _common_errors(data: dict[str, Any], stem: str) -> list[str]:
         errors.append(f"name: 파일명과 다릅니다 (name={name.strip()!r} · 파일={stem!r})")
     elif UNSAFE_NAME.search(name) or name.strip() in (".", ".."):
         errors.append(f"name: 파일 경로로 쓸 수 없는 문자가 있습니다 ({name.strip()!r})")
-    for p in scan_forbidden_keys(data):
-        errors.append(f"금지 키: {p} — 원문 인용·성별 추정은 넣지 않습니다 (docs/PRIVACY.md)")
-    blob = json.dumps(data, ensure_ascii=False)
-    for label, rx in forbidden_patterns():
-        m = rx.search(blob)
-        if m:
-            errors.append(f"금지 패턴({label}): {m.group(0)[:24]} — docs/PRIVACY.md")
-    return errors
+    return errors + _privacy_errors(data)
 
 
 def validate_profile(data: object, stem: str) -> list[str]:
@@ -274,6 +300,232 @@ def validate_project(data: object, stem: str) -> list[str]:
     return errors
 
 
+def _date_errors(value: object, where: str, required: bool = True) -> list[str]:
+    s = text(value)
+    if not s:
+        return [f"{where}: 비어 있습니다 (YYYY-MM-DD)"] if required else []
+    if not DATE_RX.match(s):
+        return [f"{where}: YYYY-MM-DD 형식이어야 합니다 (현재 {s!r})"]
+    try:
+        date.fromisoformat(s)
+    except ValueError:
+        return [f"{where}: 달력에 없는 날짜입니다 ({s!r})"]
+    return []
+
+
+def _valid_date(s: str) -> bool:
+    """형식이 맞고 달력에 있는 날짜인지 (2026-09-31 은 형식은 맞지만 없다)."""
+    return not _date_errors(s, "")
+
+
+def _event_errors(e: object, where: str, recurring: bool) -> list[str]:
+    """events[] 와 recurring[] 이 공유하는 검사 — kind 는 여섯 값, label 은 비어 있지 않음."""
+    if not isinstance(e, dict):
+        return [f"{where}: 객체가 아닙니다"]
+    errors: list[str] = []
+    kind = text(e.get("kind"))
+    if kind not in EVENT_KINDS:
+        errors.append(f"{where}.kind: {' | '.join(EVENT_KINDS)} 중 하나여야 합니다 (현재 {kind!r})")
+    if not text(e.get("label")):
+        errors.append(f"{where}.label: 비어 있습니다 (카드에 찍을 한 줄)")
+    if not recurring:
+        errors.extend(_date_errors(e.get("date"), f"{where}.date"))
+        errors.extend(_date_errors(e.get("end"), f"{where}.end", required=False))
+        start, end = text(e.get("date")), text(e.get("end"))
+        if end and DATE_RX.match(start) and DATE_RX.match(end) and end < start:
+            errors.append(f"{where}.end: date 이상이어야 합니다 ({start} → {end})")
+    else:
+        wd = e.get("weekdays")
+        if not isinstance(wd, list) or not wd:
+            errors.append(f"{where}.weekdays: 0=월 … 6=일 정수 배열이 필요합니다")
+        else:
+            bad = [d for d in wd if not isinstance(d, int) or isinstance(d, bool) or not 0 <= d <= 6]
+            if bad:
+                errors.append(f"{where}.weekdays: 0~6 정수만 들어갑니다 (현재 {bad!r})")
+        # from·until 도 문자열로 비교하므로 형식이 어긋나면 전개 범위가 조용히 틀어진다
+        for key in ("from", "until"):
+            errors.extend(_date_errors(e.get(key), f"{where}.{key}", required=False))
+    return errors
+
+
+def validate_schedule(data: object) -> list[str]:
+    """거부 사유 목록. 빈 리스트면 통과 (docs/SCHEDULE_SCHEMA.md '검증').
+
+    파일이 하나라 어긋나면 일정 섹션만 빠지고 나머지 카드는 그대로 나온다.
+    `name` 검사는 하지 않는다 — 사람 카드와 달리 파일명이 곧 카드 이름이 아니다.
+    """
+    if not isinstance(data, dict):
+        return [f"최상위가 객체가 아닙니다 (현재 {type(data).__name__})"]
+    errors = _version_errors(data)
+    holidays = data.get("holidays")
+    if holidays is not None and not isinstance(holidays, list):
+        errors.append("holidays: YYYY-MM-DD 배열이어야 합니다")
+    else:
+        for i, h in enumerate(holidays or []):
+            errors.extend(_date_errors(h, f"holidays[{i}]"))
+    for key, recurring in (("events", False), ("recurring", True)):
+        v = data.get(key)
+        if v is None:
+            continue  # 없으면 빈 배열로 본다
+        if not isinstance(v, list):
+            errors.append(f"{key}: 배열이어야 합니다")
+            continue
+        for i, e in enumerate(v):
+            errors.extend(_event_errors(e, f"{key}[{i}]", recurring))
+    return errors + _privacy_errors(data)
+
+
+def validate_changelog(data: object) -> list[str]:
+    """거부 사유 목록. 빈 리스트면 통과 (docs/CHANGELOG_SCHEMA.md '검증')."""
+    if not isinstance(data, dict):
+        return [f"최상위가 객체가 아닙니다 (현재 {type(data).__name__})"]
+    errors = _version_errors(data)
+    keep = data.get("keep_days")
+    if keep is not None and (not isinstance(keep, int) or isinstance(keep, bool) or keep < 1):
+        errors.append(f"keep_days: 1 이상의 정수여야 합니다 (현재 {keep!r})")
+    entries = data.get("entries")
+    if entries is None:
+        entries = []
+    if not isinstance(entries, list):
+        errors.append("entries: 배열이어야 합니다")
+        entries = []
+    for i, e in enumerate(entries):
+        where = f"entries[{i}]"
+        if not isinstance(e, dict):
+            errors.append(f"{where}: 객체가 아닙니다")
+            continue
+        errors.extend(_date_errors(e.get("date"), f"{where}.date"))
+        cardk = text(e.get("card"))
+        if cardk not in CHANGE_CARDS:
+            errors.append(f"{where}.card: {' | '.join(CHANGE_CARDS)} 중 하나여야 합니다 (현재 {cardk!r})")
+        if not text(e.get("summary")):
+            errors.append(f"{where}.summary: 비어 있습니다 (무엇이 바뀌었는지 한 줄)")
+    return errors + _privacy_errors(data)
+
+
+# ─────────────────────────────────────────────────────── 업무일 창 (일정·변경 공통)
+#
+# part-wiki 의 scripts/part_schedule.py 와 **같은 규칙**이다. 사이트와 텔레그램 요약이
+# 같은 날짜를 보게 하려고 순수 함수로 떼어 두었다 (docs/SCHEDULE_SCHEMA.md).
+
+
+def is_business_day(d: date, holidays: set[str]) -> bool:
+    """월~금이고 holidays(YYYY-MM-DD 문자열 집합)에 없는 날."""
+    return d.weekday() < 5 and d.isoformat() not in holidays
+
+
+def business_window(today: date, holidays: object = (), days: int = SCHEDULE_WINDOW_DAYS) -> tuple[date, date]:
+    """(창 시작, 창 끝). 기준일이 업무일이면 그날이 첫째 날, 아니면 다음 업무일.
+
+    첫째 날부터 업무일을 `days` 개 세어 마지막 업무일이 창 끝이다.
+    목 → (목, 금) · 금 → (금, 월) · 토 → (월, 화).
+    """
+    hs = {holidays} if isinstance(holidays, str) else {text(h) for h in (holidays or ())}
+    start = today
+    for _ in range(_WINDOW_SCAN_LIMIT):
+        if is_business_day(start, hs):
+            break
+        start += timedelta(days=1)
+    cur, counted = start, 1
+    while counted < days:
+        cur += timedelta(days=1)
+        if (cur - start).days > _WINDOW_SCAN_LIMIT:
+            break
+        if is_business_day(cur, hs):
+            counted += 1
+    return start, cur
+
+
+def _norm_event(e: dict[str, Any], day: str, end: str, recurring: bool) -> dict[str, Any]:
+    return {
+        "date": day,
+        "end": end,
+        "time": text(e.get("time")),
+        "kind": text(e.get("kind")),
+        "label": text(e.get("label")),
+        "members": str_list(e.get("members")),
+        "note": text(e.get("note")),
+        "recurring": recurring,
+    }
+
+
+def events_in_window(schedule: object, today: date, days: int = SCHEDULE_WINDOW_DAYS) -> list[dict[str, Any]]:
+    """창 안의 이벤트를 날짜순(같은 날은 time → label)으로 돌려준다.
+
+    - 단발 이벤트: `date <= 창 끝` 이고 `(end 또는 date) >= 창 시작` 이면 들어온다.
+      창 안의 주말·휴일에 걸린 이벤트도 보인다.
+    - 반복 일정: 창 안의 **업무일**에만 전개한다 (주말·휴일에는 펴지 않는다).
+      `weekdays` 에 요일이 있고 `from <= 날짜 <= until` 이어야 한다.
+    """
+    d = schedule if isinstance(schedule, dict) else {}
+    holidays = {h for h in str_list(d.get("holidays"))}
+    start, end = business_window(today, holidays, days)
+    s_iso, e_iso = start.isoformat(), end.isoformat()
+
+    out: list[dict[str, Any]] = []
+    for e in d.get("events") or []:
+        if not isinstance(e, dict):
+            continue
+        day = text(e.get("date"))
+        if not _valid_date(day):
+            continue
+        tail = text(e.get("end"))
+        if not _valid_date(tail) or tail == day:
+            tail = ""  # part_schedule.py 와 같게 — 하루짜리는 end 를 비운다
+        if day <= e_iso and (tail or day) >= s_iso:
+            out.append(_norm_event(e, day, tail, recurring=False))
+
+    cur = start
+    while cur <= end:
+        if is_business_day(cur, holidays):
+            iso = cur.isoformat()
+            for r in d.get("recurring") or []:
+                if not isinstance(r, dict):
+                    continue
+                wd = r.get("weekdays")
+                if not isinstance(wd, list) or cur.weekday() not in wd:
+                    continue
+                frm, until = text(r.get("from")), text(r.get("until"))
+                if (frm and iso < frm) or (until and iso > until):
+                    continue
+                out.append(_norm_event(r, iso, "", recurring=True))
+        cur += timedelta(days=1)
+
+    out.sort(key=lambda x: (x["date"], x["time"], x["label"]))
+    return out
+
+
+def entries_within(changelog: object, today: date, days: int | None = None) -> list[dict[str, Any]]:
+    """오늘을 포함해 `days` 일 안의 변경 항목을 최신순으로. 같은 날은 파일에 적힌 순서를 지킨다.
+
+    `days` 가 None 이면 `changelog.keep_days` (기본 7). 7 이면 today-6 까지 들어오고 today-7 은 빠진다.
+    """
+    d = changelog if isinstance(changelog, dict) else {}
+    if days is None:
+        keep = d.get("keep_days", CHANGELOG_KEEP_DAYS)
+        days = keep if isinstance(keep, int) and not isinstance(keep, bool) and keep >= 1 else CHANGELOG_KEEP_DAYS
+    floor = (today - timedelta(days=days - 1)).isoformat()
+    ceil = today.isoformat()
+    items: list[dict[str, Any]] = []
+    for e in d.get("entries") or []:
+        if not isinstance(e, dict):
+            continue
+        day = text(e.get("date"))
+        if not DATE_RX.match(day) or not (floor <= day <= ceil):
+            continue
+        items.append(
+            {
+                "date": day,
+                "card": text(e.get("card")),
+                "target": text(e.get("target")),
+                "summary": text(e.get("summary")),
+            }
+        )
+    # reverse=True 로도 같은 키끼리의 원래 순서는 유지된다 (파이썬 정렬은 안정적이다)
+    items.sort(key=lambda x: x["date"], reverse=True)
+    return items
+
+
 def project_progress(milestones: object) -> tuple[int, int, str]:
     """(완료 수, 전체 수, 다음 마일스톤). 진행 중인 것이 있으면 그것이 '다음'이다."""
     raw = milestones if isinstance(milestones, list) else []
@@ -300,10 +552,15 @@ def badge_short(badge: object) -> str:
 # ───────────────────────────────────────────────────────────────────────── 적재
 
 
+# 디렉터리 하나에 카드 여러 장 / 파일 하나가 카드 한 장
+CARD_DIRS = (("profile", "profiles"), ("project", "projects"))
+CARD_FILES = (("schedule", "schedule.json"), ("changelog", "changelog.json"))
+
+
 @dataclass
 class Card:
-    kind: str  # "profile" | "project"
-    file: str  # 표시용 경로 (profiles/김동준.json)
+    kind: str  # "profile" | "project" | "schedule" | "changelog"
+    file: str  # 표시용 경로 (profiles/김동준.json · schedule.json)
     data: dict[str, Any] | None
     errors: list[str] = field(default_factory=list)
 
@@ -318,19 +575,30 @@ def _parse(kind: str, shown: str, raw: str) -> Card:
     except json.JSONDecodeError as e:
         return Card(kind, shown, None, [f"JSON 파싱 실패 — {e.lineno}행 {e.colno}열: {e.msg}"])
     stem = Path(shown).stem
-    errors = validate_profile(data, stem) if kind == "profile" else validate_project(data, stem)
+    if kind == "profile":
+        errors = validate_profile(data, stem)
+    elif kind == "project":
+        errors = validate_project(data, stem)
+    elif kind == "schedule":
+        errors = validate_schedule(data)
+    else:
+        errors = validate_changelog(data)
     return Card(kind, shown, data if isinstance(data, dict) else None, errors)
 
 
 def load_local(root: Path) -> list[Card]:
     cards: list[Card] = []
-    for kind, sub_dir in (("profile", "profiles"), ("project", "projects")):
+    for kind, sub_dir in CARD_DIRS:
         d = root / "data" / sub_dir
         if not d.is_dir():
             warn(f"디렉터리 없음: {d}")
             continue
         for jp in sorted(d.glob("*.json")):
             cards.append(_parse(kind, f"{sub_dir}/{jp.name}", jp.read_text(encoding="utf-8")))
+    for kind, fname in CARD_FILES:
+        fp = root / "data" / fname
+        if fp.is_file():  # 없으면 그 섹션만 비운다 — 경고하지 않는다
+            cards.append(_parse(kind, fname, fp.read_text(encoding="utf-8")))
     return cards
 
 
@@ -355,7 +623,7 @@ def load_remote(gh: GitHub, org: str, repo: str, ref: str) -> list[Card]:
     정상 배포로 덮어쓰지 않고 워크플로가 실패해 토큰 문제를 알린다.
     """
     cards: list[Card] = []
-    for kind, sub_dir in (("profile", "profiles"), ("project", "projects")):
+    for kind, sub_dir in CARD_DIRS:
         try:
             listing, _ = gh.get(f"/repos/{org}/{repo}/contents/data/{sub_dir}", {"ref": ref})
         except ApiError as e:
@@ -376,4 +644,16 @@ def load_remote(gh: GitHub, org: str, repo: str, ref: str) -> list[Card]:
                 continue
             raw = base64.b64decode(str(body.get("content", ""))).decode("utf-8", errors="replace")
             cards.append(_parse(kind, f"{sub_dir}/{name}", raw))
+    for kind, fname in CARD_FILES:
+        try:
+            body, _ = gh.get(f"/repos/{org}/{repo}/contents/data/{fname}", {"ref": ref})
+        except ApiError as e:
+            if "HTTP 404" in str(e):
+                continue  # 아직 안 만든 파일이다 — 그 섹션만 비운다
+            raise
+        if not isinstance(body, dict) or body.get("encoding") != "base64":
+            cards.append(Card(kind, fname, None, ["파일 본문을 받지 못했습니다 (1MB 초과?)"]))
+            continue
+        raw = base64.b64decode(str(body.get("content", ""))).decode("utf-8", errors="replace")
+        cards.append(_parse(kind, fname, raw))
     return cards

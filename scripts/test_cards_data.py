@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 """cards_data.py 의 검증 규칙과 build_site.py 의 공개 범위를 테스트한다.
 
-근거: part-wiki 의 docs/PROFILE_SCHEMA.md · docs/PROJECT_SCHEMA.md · docs/PRIVACY.md.
-표준 라이브러리만 쓴다.
+근거: part-wiki 의 docs/PROFILE_SCHEMA.md · docs/PROJECT_SCHEMA.md · docs/SCHEDULE_SCHEMA.md ·
+docs/CHANGELOG_SCHEMA.md · docs/PRIVACY.md. 표준 라이브러리만 쓴다.
 
     python3 -m unittest discover -s scripts -p 'test_*.py'
 """
 from __future__ import annotations
 
+import base64
 import copy
+import datetime
+import json
 import os
 import pathlib
+import shutil
 import sys
+import tempfile
 import unittest
 
 SCRIPTS_DIR = pathlib.Path(__file__).resolve().parent
@@ -96,6 +101,46 @@ def make_project() -> dict:
         "members": [{"name": "한민우", "role": "총괄"}],
         "next": ["부회장 보고"],
         "recent": [{"date": "2026-09-15", "note": "스크럼"}],
+    }
+
+
+# 2026-09-17 은 목요일이다. 업무일 창 테스트는 이 주를 기준으로 쓴다.
+THU = datetime.date(2026, 9, 17)
+FRI = datetime.date(2026, 9, 18)
+SAT = datetime.date(2026, 9, 19)
+SUN = datetime.date(2026, 9, 20)
+MON = datetime.date(2026, 9, 21)
+TUE = datetime.date(2026, 9, 22)
+
+
+def make_schedule() -> dict:
+    """docs/SCHEDULE_SCHEMA.md 기준의 정상 일정."""
+    return {
+        "schema_version": 1,
+        "part": "고객서비스파트",
+        "generated": "2026-09-16",
+        "holidays": [],
+        "events": [
+            {"date": "2026-09-17", "time": "10:30", "kind": "회의", "label": "스크럼 의제", "members": ["김동준"], "note": ""},
+            {"date": "2026-09-17", "end": "2026-09-18", "time": "", "kind": "보고", "label": "본부장 보고", "members": [], "note": "사업계획"},
+        ],
+        "recurring": [
+            {"weekdays": [0, 1, 2, 3], "time": "10:30", "kind": "회의", "label": "스크럼", "members": [], "until": "2026-10-31", "note": ""},
+        ],
+    }
+
+
+def make_changelog() -> dict:
+    """docs/CHANGELOG_SCHEMA.md 기준의 정상 변경 목록."""
+    return {
+        "schema_version": 1,
+        "part": "고객서비스파트",
+        "keep_days": 7,
+        "entries": [
+            {"date": "2026-09-17", "card": "project", "target": "평생보장소득", "summary": "마일스톤 갱신"},
+            {"date": "2026-09-17", "card": "profile", "target": "김동준", "summary": "말투 신호 갱신"},
+            {"date": "2026-09-16", "card": "site", "target": "", "summary": "일정 카드 신설"},
+        ],
     }
 
 
@@ -323,8 +368,324 @@ class ReactionsNotRenderedTests(unittest.TestCase):
         self.assertIn("단정 3.5배", build_site.member_card(self.data, "m/김동준.html"))
 
 
-if __name__ == "__main__":
-    unittest.main()
+class ValidateScheduleTests(unittest.TestCase):
+    """docs/SCHEDULE_SCHEMA.md '검증'. 파일이 하나라 어긋나면 일정 섹션만 빠진다."""
+
+    def _errors(self, data):
+        return cards_data.validate_schedule(data)
+
+    def test_정상_일정은_통과(self):
+        self.assertEqual(self._errors(make_schedule()), [])
+
+    def test_events와_recurring이_없어도_통과(self):
+        self.assertEqual(self._errors({"schema_version": 1, "part": "고객서비스파트"}), [])
+
+    def test_schema_version이_다르면_거부(self):
+        s = make_schedule()
+        s["schema_version"] = 2
+        self.assertTrue(any("schema_version" in e for e in self._errors(s)))
+
+    def test_kind는_여섯_값만(self):
+        s = make_schedule()
+        s["events"][0]["kind"] = "회식"
+        self.assertTrue(any("events[0].kind" in e for e in self._errors(s)))
+
+    def test_date_형식이_틀리면_거부(self):
+        s = make_schedule()
+        s["events"][0]["date"] = "2026-9-17"
+        self.assertTrue(any("events[0].date" in e for e in self._errors(s)))
+
+    def test_end가_date보다_빠르면_거부(self):
+        s = make_schedule()
+        s["events"][1]["end"] = "2026-09-16"
+        self.assertTrue(any("events[1].end" in e for e in self._errors(s)))
+
+    def test_label이_비면_거부(self):
+        s = make_schedule()
+        s["events"][0]["label"] = "  "
+        self.assertTrue(any("events[0].label" in e for e in self._errors(s)))
+
+    def test_링크는_거부(self):
+        """일정도 프로필·프로젝트와 같은 공개 검사를 탄다 (docs/PRIVACY.md)."""
+        s = make_schedule()
+        s["events"][0]["note"] = "https://intra.example/회의록 참고"
+        self.assertTrue(any("금지 패턴" in e for e in self._errors(s)))
+
+    def test_weekdays_범위를_벗어나면_거부(self):
+        s = make_schedule()
+        s["recurring"][0]["weekdays"] = [0, 7]
+        self.assertTrue(any("recurring[0].weekdays" in e for e in self._errors(s)))
+
+    def test_weekdays가_배열이_아니면_거부(self):
+        s = make_schedule()
+        s["recurring"][0]["weekdays"] = 0
+        self.assertTrue(any("recurring[0].weekdays" in e for e in self._errors(s)))
+
+    def test_금지_키_거부(self):
+        s = make_schedule()
+        s["events"][0]["raw_quote"] = "원문 인용"
+        self.assertTrue(any("금지 키" in e for e in self._errors(s)))
+
+
+class ValidateChangelogTests(unittest.TestCase):
+    """docs/CHANGELOG_SCHEMA.md '검증'."""
+
+    def _errors(self, data):
+        return cards_data.validate_changelog(data)
+
+    def test_정상_변경목록은_통과(self):
+        self.assertEqual(self._errors(make_changelog()), [])
+
+    def test_card는_네_값만(self):
+        c = make_changelog()
+        c["entries"][0]["card"] = "일정"
+        self.assertTrue(any("entries[0].card" in e for e in self._errors(c)))
+
+    def test_summary가_비면_거부(self):
+        c = make_changelog()
+        c["entries"][1]["summary"] = ""
+        self.assertTrue(any("entries[1].summary" in e for e in self._errors(c)))
+
+    def test_date_형식이_틀리면_거부(self):
+        c = make_changelog()
+        c["entries"][2]["date"] = "9/16"
+        self.assertTrue(any("entries[2].date" in e for e in self._errors(c)))
+
+    def test_링크는_거부(self):
+        c = make_changelog()
+        c["entries"][0]["summary"] = "자세한 건 www.example.com 참고"
+        self.assertTrue(any("금지 패턴" in e for e in self._errors(c)))
+
+    def test_entries가_없어도_통과(self):
+        self.assertEqual(self._errors({"schema_version": 1}), [])
+
+
+class BusinessWindowTests(unittest.TestCase):
+    """업무일 2일 창. part-wiki 의 part_schedule.py 와 같은 규칙이어야 한다."""
+
+    def w(self, today, holidays=()):
+        return cards_data.business_window(today, holidays)
+
+    def test_목요일은_목금(self):
+        self.assertEqual(self.w(THU), (THU, FRI))
+
+    def test_금요일은_금월(self):
+        self.assertEqual(self.w(FRI), (FRI, MON))
+
+    def test_토요일은_월화(self):
+        self.assertEqual(self.w(SAT), (MON, TUE))
+
+    def test_일요일은_월화(self):
+        self.assertEqual(self.w(SUN), (MON, TUE))
+
+    def test_기준일이_휴일이면_다음_업무일부터(self):
+        self.assertEqual(self.w(THU, {"2026-09-17"}), (FRI, MON))
+
+    def test_창_안의_휴일은_건너뛴다(self):
+        """목 기준인데 금이 휴일이면 목·월이 된다."""
+        self.assertEqual(self.w(THU, {"2026-09-18"}), (THU, MON))
+
+    def test_업무일_수는_인자로_바꾼다(self):
+        self.assertEqual(cards_data.business_window(THU, (), 3), (THU, MON))
+
+    def test_is_business_day(self):
+        self.assertTrue(cards_data.is_business_day(THU, set()))
+        self.assertFalse(cards_data.is_business_day(SAT, set()))
+        self.assertFalse(cards_data.is_business_day(THU, {"2026-09-17"}))
+
+
+class EventsInWindowTests(unittest.TestCase):
+    """창 안의 일정만 고른다. 반복은 창 안 업무일에만 편다."""
+
+    def labels(self, schedule, today, days=2):
+        return [(e["date"], e["label"]) for e in cards_data.events_in_window(schedule, today, days)]
+
+    def test_창_안의_하루_이벤트는_들어온다(self):
+        self.assertIn(("2026-09-17", "스크럼 의제"), self.labels(make_schedule(), THU))
+
+    def test_창_밖의_이벤트는_빠진다(self):
+        s = make_schedule()
+        s["events"].append({"date": "2026-09-21", "kind": "회의", "label": "다음주 회의"})
+        self.assertNotIn(("2026-09-21", "다음주 회의"), self.labels(s, THU))
+
+    def test_창_시작_전에_시작해_창_안에_끝나는_기간_이벤트는_들어온다(self):
+        s = make_schedule()
+        s["events"].append({"date": "2026-09-15", "end": "2026-09-17", "kind": "근태", "label": "출장"})
+        self.assertIn(("2026-09-15", "출장"), self.labels(s, THU))
+
+    def test_창보다_앞서_끝난_기간_이벤트는_빠진다(self):
+        s = make_schedule()
+        s["events"].append({"date": "2026-09-14", "end": "2026-09-16", "kind": "근태", "label": "지난 휴가"})
+        self.assertNotIn(("2026-09-14", "지난 휴가"), self.labels(s, THU))
+
+    def test_반복_일정은_해당_요일에_펴진다(self):
+        """스크럼은 월~목이라 목요일 창(목·금)에서는 목요일 하루만 나온다."""
+        got = [d for d, label in self.labels(make_schedule(), THU) if label == "스크럼"]
+        self.assertEqual(got, ["2026-09-17"])
+
+    def test_until이_지나면_펴지지_않는다(self):
+        s = make_schedule()
+        s["recurring"][0]["until"] = "2026-09-16"
+        self.assertNotIn("스크럼", [label for _, label in self.labels(s, THU)])
+
+    def test_from_이전에는_펴지지_않는다(self):
+        s = make_schedule()
+        s["recurring"][0]["from"] = "2026-09-18"
+        self.assertEqual([d for d, label in self.labels(s, THU) if label == "스크럼"], [])
+
+    def test_주말에는_반복을_펴지_않는다(self):
+        """창(금~월)이 토·일을 지나가도 그 이틀에는 반복을 펴지 않는다."""
+        s = make_schedule()
+        s["recurring"] = [{"weekdays": [5, 6], "kind": "기타", "label": "주말 당번"}]
+        self.assertNotIn("주말 당번", [label for _, label in self.labels(s, FRI)])
+
+    def test_창_안_휴일에도_반복을_펴지_않는다(self):
+        """금이 휴일이면 창은 목·월로 늘어나지만, 금요일 반복은 펴지 않는다."""
+        s = make_schedule()
+        s["holidays"] = ["2026-09-18"]
+        s["recurring"] = [{"weekdays": [4], "kind": "마감", "label": "주간업무 마감"}]
+        self.assertEqual(self.labels(s, THU), [("2026-09-17", "본부장 보고"), ("2026-09-17", "스크럼 의제")])
+
+    def test_정렬은_날짜_시각_라벨_순(self):
+        s = make_schedule()
+        s["events"] = [
+            {"date": "2026-09-17", "time": "14:00", "kind": "회의", "label": "나중"},
+            {"date": "2026-09-17", "time": "09:00", "kind": "회의", "label": "ㄴ 같은 시각"},
+            {"date": "2026-09-17", "time": "09:00", "kind": "회의", "label": "ㄱ 같은 시각"},
+            {"date": "2026-09-18", "time": "09:00", "kind": "회의", "label": "다음날"},
+        ]
+        s["recurring"] = []
+        self.assertEqual(
+            self.labels(s, THU),
+            [
+                ("2026-09-17", "ㄱ 같은 시각"),
+                ("2026-09-17", "ㄴ 같은 시각"),
+                ("2026-09-17", "나중"),
+                ("2026-09-18", "다음날"),
+            ],
+        )
+
+    def test_정규화된_키를_돌려준다(self):
+        e = cards_data.events_in_window(make_schedule(), THU)[0]
+        self.assertEqual(
+            sorted(e), sorted(["date", "end", "time", "kind", "label", "members", "note", "recurring"])
+        )
+
+    def test_반복_여부가_표시된다(self):
+        got = {label: e for (_, label), e in zip(self.labels(make_schedule(), THU), cards_data.events_in_window(make_schedule(), THU))}
+        self.assertTrue(got["스크럼"]["recurring"])
+        self.assertFalse(got["스크럼 의제"]["recurring"])
+
+    def test_일정이_없으면_빈_목록(self):
+        self.assertEqual(cards_data.events_in_window(None, THU), [])
+
+
+class EntriesWithinTests(unittest.TestCase):
+    """최근 7일 = 오늘 포함 7일. today-6 은 들어오고 today-7 은 빠진다."""
+
+    def _log(self, *dates):
+        return {
+            "schema_version": 1,
+            "entries": [{"date": d, "card": "site", "target": "", "summary": d} for d in dates],
+        }
+
+    def test_오늘_포함_7일_경계(self):
+        got = cards_data.entries_within(self._log("2026-09-17", "2026-09-11", "2026-09-10"), THU)
+        self.assertEqual([e["date"] for e in got], ["2026-09-17", "2026-09-11"])
+
+    def test_미래_날짜는_빠진다(self):
+        got = cards_data.entries_within(self._log("2026-09-18"), THU)
+        self.assertEqual(got, [])
+
+    def test_keep_days를_존중한다(self):
+        log = self._log("2026-09-17", "2026-09-16", "2026-09-15")
+        log["keep_days"] = 2
+        self.assertEqual([e["date"] for e in cards_data.entries_within(log, THU)], ["2026-09-17", "2026-09-16"])
+
+    def test_인자로_준_days가_keep_days를_이긴다(self):
+        log = self._log("2026-09-17", "2026-09-16")
+        log["keep_days"] = 7
+        self.assertEqual([e["date"] for e in cards_data.entries_within(log, THU, 1)], ["2026-09-17"])
+
+    def test_최신순이고_같은_날은_파일_순서를_지킨다(self):
+        got = cards_data.entries_within(make_changelog(), THU)
+        self.assertEqual(
+            [(e["date"], e["summary"]) for e in got],
+            [
+                ("2026-09-17", "마일스톤 갱신"),
+                ("2026-09-17", "말투 신호 갱신"),
+                ("2026-09-16", "일정 카드 신설"),
+            ],
+        )
+
+    def test_변경목록이_없으면_빈_목록(self):
+        self.assertEqual(cards_data.entries_within(None, THU), [])
+
+
+class RenderIndexTests(unittest.TestCase):
+    """목록 페이지의 섹션 순서와 빈 상태. 바뀐 것과 곧 있을 일이 맨 위에 온다."""
+
+    def _index(self, **kw):
+        args = {
+            "profiles": [make_profile()],
+            "projects": [make_project()],
+            "skipped": [],
+            "part": "고객서비스파트",
+            "built": "2026-09-17 10:00 KST",
+            "generated": "2026-09-16",
+            "schedule": make_schedule(),
+            "changelog": make_changelog(),
+            "today": THU,
+        }
+        args.update(kw)
+        return build_site.render_index(**args)
+
+    def test_섹션_순서는_변경_일정_프로젝트_멤버(self):
+        h = self._index()
+        order = [h.index(f"sec {cls}") for cls in ("sec-changes", "sec-sched", "sec-proj", "sec-members")]
+        self.assertEqual(order, sorted(order))
+
+    def test_히어로_칩에_건수가_붙는다(self):
+        """이벤트 2건 + 목요일에 펴진 스크럼 1건 = 3건. 스크럼은 월~목이라 금요일에는 없다."""
+        h = self._index()
+        self.assertIn("<b>일정</b>3건", h)
+        self.assertIn("<b>변경</b>3건", h)
+
+    def test_일정이_없으면_빈_상태_문구(self):
+        h = self._index(schedule=None)
+        self.assertIn("업무일 2일 안에 잡힌 일정이 없다", h)
+        self.assertIn("<b>일정</b>0건", h)
+
+    def test_변경이_없으면_빈_상태_문구(self):
+        h = self._index(changelog=None)
+        self.assertIn("최근 7일간 바뀐 카드가 없다", h)
+        self.assertIn("<b>변경</b>0건", h)
+
+    def test_창_범위를_부제에_적는다(self):
+        self.assertIn("9/17(목) ~ 9/18(금) · 기준 9/17(목)", self._index())
+
+    def test_오늘_날짜_그룹에_오늘_표시(self):
+        self.assertIn('<span class="today">오늘</span>', self._index())
+
+    def test_변경_대상이_카드와_같으면_상세로_링크(self):
+        h = self._index()
+        self.assertIn(build_site.href_for("p", make_project()), h)
+        self.assertIn(build_site.href_for("m", make_profile()), h)
+
+    def test_카드가_없는_이름은_링크하지_않는다(self):
+        log = make_changelog()
+        log["entries"][1]["target"] = "없는사람"
+        h = self._index(changelog=log)
+        self.assertIn("없는사람", h)
+        self.assertNotIn('href="m/없는사람.html"', h)
+
+    def test_반복_일정은_매주로_구분된다(self):
+        self.assertIn("매주", self._index())
+
+    def test_일정과_변경이_모두_없어도_빌드된다(self):
+        h = self._index(schedule=None, changelog=None, profiles=[], projects=[])
+        self.assertIn("sec-changes", h)
+        self.assertIn("sec-sched", h)
 
 
 class FakeGitHub:
@@ -355,6 +716,18 @@ class LoadRemoteTests(unittest.TestCase):
     def test_저장소는_보이고_폴더만_없으면_빈_목록(self):
         gh = FakeGitHub({"/repos/org/wiki": {"name": "wiki"}})
         self.assertEqual(cards_data.load_remote(gh, "org", "wiki", "main"), [])
+
+    def test_일정_변경_파일도_같이_받는다(self):
+        """파일 하나짜리 카드도 Contents API 로 받는다. 없으면(404) 그 섹션만 빈다."""
+        body = base64.b64encode(json.dumps(make_schedule(), ensure_ascii=False).encode()).decode()
+        gh = FakeGitHub(
+            {
+                "/repos/org/wiki": {"name": "wiki"},
+                "/repos/org/wiki/contents/data/schedule.json": {"encoding": "base64", "content": body},
+            }
+        )
+        cards = cards_data.load_remote(gh, "org", "wiki", "main")
+        self.assertEqual([(c.kind, c.file, c.ok) for c in cards], [("schedule", "schedule.json", True)])
 
     def test_404_아닌_오류는_그대로_올린다(self):
         gh = FakeGitHub({"/repos/org/wiki/contents/data/profiles": cards_data.ApiError("HTTP 401 x: Bad credentials")})
@@ -392,3 +765,68 @@ class MainApiErrorTests(unittest.TestCase):
     def test_로컬에서는_오류_접두어(self):
         e = self._run_main(actions=False)
         self.assertEqual(e.code, "오류: wiki 를 읽을 수 없다 (HTTP 404)")
+
+
+class LoadLocalCardFilesTests(unittest.TestCase):
+    """schedule.json·changelog.json 은 파일 하나가 카드 하나다. 없으면 없는 대로 간다."""
+
+    def _root(self, files: dict[str, str]) -> pathlib.Path:
+        root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        (root / "data" / "profiles").mkdir(parents=True)
+        (root / "data" / "projects").mkdir(parents=True)
+        for name, body in files.items():
+            (root / "data" / name).write_text(body, encoding="utf-8")
+        return root
+
+    def test_파일이_없으면_카드도_없다(self):
+        self.assertEqual(cards_data.load_local(self._root({})), [])
+
+    def test_읽으면_kind와_file이_붙는다(self):
+        root = self._root(
+            {
+                "schedule.json": json.dumps(make_schedule(), ensure_ascii=False),
+                "changelog.json": json.dumps(make_changelog(), ensure_ascii=False),
+            }
+        )
+        got = {c.kind: c for c in cards_data.load_local(root)}
+        self.assertEqual(sorted(got), ["changelog", "schedule"])
+        self.assertEqual(got["schedule"].file, "schedule.json")
+        self.assertTrue(got["schedule"].ok and got["changelog"].ok)
+
+    def test_어긋나면_그_파일만_건너뛴다(self):
+        bad = make_schedule()
+        bad["events"][0]["kind"] = "회식"
+        root = self._root(
+            {
+                "schedule.json": json.dumps(bad, ensure_ascii=False),
+                "changelog.json": json.dumps(make_changelog(), ensure_ascii=False),
+            }
+        )
+        got = {c.kind: c for c in cards_data.load_local(root)}
+        self.assertFalse(got["schedule"].ok)
+        self.assertTrue(got["changelog"].ok)
+
+
+class 달력에_없는_날짜(unittest.TestCase):
+    def test_검증이_거부한다(self):
+        s = make_schedule()
+        s["events"][0]["date"] = "2026-09-31"
+        self.assertTrue(any("달력에 없는" in e for e in cards_data.validate_schedule(s)))
+
+    def test_창_계산이_건너뛴다(self):
+        s = make_schedule()
+        s["events"] = [{"date": "2026-09-31", "kind": "기타", "label": "없는 날"}]
+        s["recurring"] = []
+        self.assertEqual(cards_data.events_in_window(s, datetime.date(2026, 9, 28)), [])
+
+    def test_하루짜리_end_는_비운다(self):
+        s = make_schedule()
+        s["events"] = [{"date": "2026-09-17", "end": "2026-09-17", "kind": "기타", "label": "하루"}]
+        s["recurring"] = []
+        got = cards_data.events_in_window(s, datetime.date(2026, 9, 17))
+        self.assertEqual(got[0]["end"], "")
+
+
+if __name__ == "__main__":
+    unittest.main()
