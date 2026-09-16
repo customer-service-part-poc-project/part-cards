@@ -287,7 +287,13 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.92em;bac
 .mcard:hover{border-color:var(--brand70);transform:translateY(-1px)}
 .mcard:hover::before{opacity:1}
 .mcard.low{border-style:dashed}
-.mname{font-size:21px;font-weight:800;line-height:1.2;letter-spacing:-.03em}
+.mhead{display:flex;align-items:center;gap:12px;min-width:0}
+.avatar{flex:0 0 auto;width:46px;height:46px;border-radius:14px;display:grid;place-items:center;
+  font-size:19px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--brand),var(--brand70));letter-spacing:-.02em}
+.avatar.av-1{background:linear-gradient(135deg,var(--fun),var(--fun-line));}
+.avatar.av-2{background:linear-gradient(135deg,var(--ok),var(--ok-soft));color:var(--ink)}
+.avatar.av-3{background:linear-gradient(135deg,var(--warn),var(--warn-soft));color:var(--ink)}
+.mname{font-size:19px;font-weight:800;line-height:1.2;letter-spacing:-.03em}
 .mrole{font-size:12.5px;color:var(--muted);margin-top:4px;font-weight:600}
 .mnick{font-size:13.5px;color:var(--brand-ink);margin-top:10px;font-weight:700;line-height:1.45}
 .mchips{display:flex;flex-wrap:wrap;gap:6px;margin-top:14px}
@@ -708,6 +714,15 @@ def render_person(d: dict[str, Any], built: str) -> str:
     return html_doc(f"{name} · {part} 프로필", body)
 
 
+def avatar_html(name: str) -> str:
+    """이름 첫 글자 모노그램. 색은 4계열 중 이름으로 고정 배정 — 빌드마다 바뀌지 않는다 (salesplus-cards 와 같은 방식)."""
+    if not name:
+        return ""
+    variant = sum(ord(ch) for ch in name) % 4
+    cls = f" av-{variant}" if variant else ""
+    return f'<span class="avatar{cls}" aria-hidden="true">{esc(name[0])}</span>'
+
+
 def member_card(d: dict[str, Any], href: str) -> str:
     name, role = text(d.get("name")), text(d.get("role"))
     fun_raw = d.get("fun")
@@ -733,8 +748,10 @@ def member_card(d: dict[str, Any], href: str) -> str:
         n = fmt_int(sig.get("utterances")) if sig.get("utterances") is not None else "?"
         badge = f'<div class="lowbadge">⚠ 표본 {esc(n)}건 — 참고만</div>'
     return (
-        f'<a class="mcard{" low" if low else ""}" href="{esc(href)}"><div class="mname">{esc(name)}</div>'
+        f'<a class="mcard{" low" if low else ""}" href="{esc(href)}">'
+        f'<div class="mhead">{avatar_html(name)}<div><div class="mname">{esc(name)}</div>'
         + (f'<div class="mrole">{esc(role)}</div>' if role else "")
+        + "</div></div>"
         + (f'<div class="mnick">{esc(nick)}</div>' if nick else "")
         + (f'<div class="mchips">{"".join(chips)}</div>' if chips else "")
         + badge

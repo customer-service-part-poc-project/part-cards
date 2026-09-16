@@ -711,6 +711,11 @@ class RenderIndexTests(unittest.TestCase):
         self.assertIn("없는사람", h)
         self.assertNotIn('href="m/없는사람.html"', h)
 
+    def test_멤버_카드에_이니셜_아바타가_붙는다(self):
+        h = self._index()
+        self.assertIn('<span class="avatar', h)
+        self.assertIn('class="mhead"', h)
+
     def test_반복_일정은_매주로_구분된다(self):
         self.assertIn("매주", self._index())
 
