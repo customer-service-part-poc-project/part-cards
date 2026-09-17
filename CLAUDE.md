@@ -3,12 +3,15 @@
 고객서비스파트 카드 사이트 빌더. 데이터는 `part-wiki/data/` 이고 여기에는 코드만 둔다. 설명은 [README.md](README.md).
 
 - `scripts/cards_data.py` — 적재(`load_local`·`load_remote`)와 스키마 검증.
-  - 카드는 네 종류다. `data/profiles/*.json` · `data/projects/*.json` 은 파일마다 한 장이고,
-    `data/schedule.json`(파트 일정) · `data/changelog.json`(최근 변경)은 **파일 하나가 한 장**이다. 없으면 그 섹션만 빈다.
-  - 업무일 2일 창(`business_window`·`events_in_window`)과 최근 7일(`entries_within`)은 순수 함수다.
+  - 카드는 다섯 종류다. `data/profiles/*.json` · `data/projects/*.json` 은 파일마다 한 장이고,
+    `data/daily.json`(업무 요약) · `data/schedule.json`(파트 일정) · `data/changelog.json`(최근 변경)은 **파일 하나가 한 장**이다. 없으면 그 섹션만 빈다.
+  - 업무일 창(`business_window`·`events_in_window`)과 최근 7일(`entries_within`)은 순수 함수다.
     part-wiki `scripts/part_schedule.py` 와 **같은 규칙**이어야 한다 — 어긋나면 사이트와 텔레그램 요약이 달라진다.
+    사이트 일정은 오늘부터 `SITE_SCHEDULE_DAYS`(3)일이고, 지난 항목은 `event_done`(빌드 시각 기준)으로 취소선 (2026-09-17).
+  - 업무 요약은 `daily_days` 가 고른 **직전 업무일과 오늘** 두 날만 그린다. 요약이 없는 날은 빈 블록.
 - `scripts/build_site.py` — HTML 렌더링만. 표준 라이브러리, CSS 인라인, JS·CDN 없음. 모든 카드 문자열은 `esc()` 를 거친다.
-  - 목록 섹션 순서는 **파트 일정 → 프로젝트 → 멤버 → 최근 변경** (변경은 줄 수가 많아 맨 아래, 2026-09-16). 프로젝트 앵커 `#projects` 는 유지한다.
+  - 목록 섹션 순서는 **업무 요약 → 파트 일정 → 프로젝트 → 멤버 → 최근 변경** (변경은 줄 수가 많아 맨 아래, 2026-09-16; 업무 요약은 2026-09-17 추가). 프로젝트 앵커 `#projects` 는 유지한다.
+  - `render_index(..., now_hm=)` 은 빌드 시각 `HH:MM`. 비우면 오늘 것은 긋지 않는다 (테스트 기본).
   - 기준일은 `render_index(..., today=)` 로 넣는다 (기본 KST 오늘). 테스트가 날짜를 고정하는 자리다.
   - 색상 토큰은 `CSS` 의 `:root` 에 있다. 대표색 `--brand:#F37321` 은 한화 CI 의 Hanwha Orange (70% `#F89B6C`, 50% `#FBB584`). 흰 바탕에 오렌지가 CI 원칙이라 라이트 모드가 기준이고, 다크는 `--brand:#FF8F45` 로 한 단계 밝힌다. 근거는 part-wiki `wiki/notes/파트-브랜드-색상.md`.
   - 작은 글자에는 `--brand` 대신 `--brand-ink` 를 쓴다 — 흰 바탕에서 `#F37321` 은 대비 3:1 미만이라 본문 텍스트용이 아니다.

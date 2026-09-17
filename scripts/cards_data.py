@@ -7,6 +7,7 @@
     data/projects/*.json   과제 카드            docs/PROJECT_SCHEMA.md
     data/schedule.json     파트 일정 (한 파일)   docs/SCHEDULE_SCHEMA.md
     data/changelog.json    최근 변경 (한 파일)   docs/CHANGELOG_SCHEMA.md
+    data/daily.json        업무 요약 (한 파일)   docs/DAILY_SCHEMA.md
 
 위키 본문(projects/·members/·raw/)은 읽지 않는다 — 카드는 사람이 공개 범위를 골라 다시 쓴 요약이다.
 공개 범위는 그 저장소의 docs/PRIVACY.md.
@@ -22,9 +23,12 @@
 - 표준 라이브러리만 사용한다.
 - 카드 한 건이 스키마에 어긋나면 **그 파일만 건너뛰고** 사유를 남긴다. 한 사람의 실수로
   전체 카드가 사라지지 않게. 일정·변경은 파일이 하나라 그 섹션만 빠진다.
-- `schedule.json`·`changelog.json` 은 **없어도 정상**이다 (경고 없이 그 섹션만 비운다).
+- `schedule.json`·`changelog.json`·`daily.json` 은 **없어도 정상**이다 (경고 없이 그 섹션만 비운다).
 - 업무일 2일 창 계산(`business_window`·`events_in_window`)은 part-wiki 의 `scripts/part_schedule.py`
   와 같은 규칙이다. 한쪽을 고치면 다른 쪽도 고친다 — 어긋나면 사이트와 텔레그램 요약이 달라진다.
+  사이트는 **오늘부터 업무일 3일**(`SITE_SCHEDULE_DAYS`, 오늘·내일·모레)을 그리고, 빌드 시각 기준 **지난 항목은 취소선**
+  (`event_done`). 텔레그램 일일 요약은 같은 함수로 오늘 하루만 (2026-09-17).
+- `daily.json` 은 날짜별 요약 묶음이다. 사이트는 **직전 업무일과 오늘** 두 날만 그린다 (`daily_days`) — 저녁에 봐도 아침에 봐도 덮이게.
 - 이 저장소는 public 이다. 카드에 실으면 안 되는 이름은 코드가 아니라 `CARDS_FORBIDDEN_NAMES`
   시크릿에 둔다 — 소스에 실명을 적지 않는다.
 """
@@ -170,8 +174,11 @@ MILESTONE_STATES = ("done", "doing", "todo")
 EVENT_KINDS = ("회의", "근태", "보고", "행사", "마감", "기타")
 CHANGE_CARDS = ("profile", "project", "schedule", "site")
 DATE_RX = re.compile(r"^\d{4}-\d{2}-\d{2}$")  # 날짜 비교를 문자열로 하므로 형식이 어긋나면 받지 않는다
-SCHEDULE_WINDOW_DAYS = 2  # 업무일 2일
+SCHEDULE_WINDOW_DAYS = 2  # 업무일 2일 (창 함수 기본값 — part_schedule.py 와 같다)
+SITE_SCHEDULE_DAYS = 3  # 사이트 파트 일정 카드: 오늘·내일·모레 (2026-09-17)
 CHANGELOG_KEEP_DAYS = 7
+DAILY_MAX_ITEMS = 12  # 방 하나의 요약 줄 상한 — 카드는 한눈에 읽는 길이여야 한다
+DAILY_MAX_ROOMS = 6
 _WINDOW_SCAN_LIMIT = 400  # 휴일이 잘못 채워져도 무한 루프에 빠지지 않게
 
 
@@ -403,6 +410,67 @@ def validate_changelog(data: object) -> list[str]:
     return errors + _privacy_errors(data)
 
 
+def _room_errors(r: object, where: str) -> list[str]:
+    if not isinstance(r, dict):
+        return [f"{where}: 객체가 아닙니다"]
+    errors = []
+    if not text(r.get("room")):
+        errors.append(f"{where}.room: 비어 있습니다 (방 이름)")
+    cnt = r.get("count", 0)
+    if not isinstance(cnt, int) or isinstance(cnt, bool) or cnt < 0:
+        errors.append(f"{where}.count: 0 이상의 정수여야 합니다 (현재 {cnt!r})")
+    items = r.get("items")
+    if items is None:
+        items = []
+    if not isinstance(items, list):
+        return errors + [f"{where}.items: 배열이어야 합니다"]
+    if len(items) > DAILY_MAX_ITEMS:
+        errors.append(f"{where}.items: {DAILY_MAX_ITEMS}줄 이하여야 합니다 (현재 {len(items)})")
+    for j, it in enumerate(items):
+        if not isinstance(it, str) or not it.strip():
+            errors.append(f"{where}.items[{j}]: 비어 있지 않은 문자열이어야 합니다")
+    return errors
+
+
+def validate_daily(data: object) -> list[str]:
+    """거부 사유 목록. 빈 리스트면 통과 (docs/DAILY_SCHEMA.md '검증').
+
+    날짜마다 방별 요약 줄 목록이다. 줄은 위키 본문 인용이 아니라 동기화 때 LLM 이 쓴 한 줄 요약이고,
+    링크·전화번호 등 금지 패턴은 다른 카드와 같이 `_privacy_errors` 가 막는다.
+    """
+    if not isinstance(data, dict):
+        return [f"최상위가 객체가 아닙니다 (현재 {type(data).__name__})"]
+    errors = _version_errors(data)
+    days = data.get("days")
+    if days is None:
+        days = []
+    if not isinstance(days, list):
+        errors.append("days: 배열이어야 합니다")
+        days = []
+    seen: set[str] = set()
+    for i, d in enumerate(days):
+        where = f"days[{i}]"
+        if not isinstance(d, dict):
+            errors.append(f"{where}: 객체가 아닙니다")
+            continue
+        errors.extend(_date_errors(d.get("date"), f"{where}.date"))
+        key = text(d.get("date"))
+        if key in seen:
+            errors.append(f"{where}.date: 같은 날짜가 두 번 있습니다 ({key})")
+        seen.add(key)
+        rooms = d.get("rooms")
+        if rooms is None:
+            rooms = []
+        if not isinstance(rooms, list):
+            errors.append(f"{where}.rooms: 배열이어야 합니다")
+            continue
+        if len(rooms) > DAILY_MAX_ROOMS:
+            errors.append(f"{where}.rooms: {DAILY_MAX_ROOMS}개 이하여야 합니다 (현재 {len(rooms)})")
+        for j, r in enumerate(rooms):
+            errors.extend(_room_errors(r, f"{where}.rooms[{j}]"))
+    return errors + _privacy_errors(data)
+
+
 # ─────────────────────────────────────────────────────── 업무일 창 (일정·변경 공통)
 #
 # part-wiki 의 scripts/part_schedule.py 와 **같은 규칙**이다. 사이트와 텔레그램 요약이
@@ -412,6 +480,48 @@ def validate_changelog(data: object) -> list[str]:
 def is_business_day(d: date, holidays: set[str]) -> bool:
     """월~금이고 holidays(YYYY-MM-DD 문자열 집합)에 없는 날."""
     return d.weekday() < 5 and d.isoformat() not in holidays
+
+
+def prev_business_day(d: date, holidays: object = ()) -> date:
+    """`d` 직전 업무일. part-wiki `part_schedule.prev_business_day` 와 같다."""
+    hol = {text(h) for h in (holidays if isinstance(holidays, (list, tuple, set)) else [])}
+    d -= timedelta(days=1)
+    n = 0
+    while not is_business_day(d, hol) and n < _WINDOW_SCAN_LIMIT:
+        d -= timedelta(days=1)
+        n += 1
+    return d
+
+
+def daily_days(daily: object, today: date, holidays: object = ()) -> list[dict[str, Any]]:
+    """업무 요약 카드에 그릴 날들 — **직전 업무일과 오늘**, 오늘이 먼저. 요약이 없는 날도 빈 블록으로 돌려준다."""
+    d = daily if isinstance(daily, dict) else {}
+    by_date = {text(x.get("date")): x for x in (d.get("days") or []) if isinstance(x, dict) and text(x.get("date"))}
+    out = []
+    for day in (today, prev_business_day(today, holidays)):
+        key = day.isoformat()
+        src = by_date.get(key) or {}
+        rooms = [r for r in (src.get("rooms") or []) if isinstance(r, dict) and text(r.get("room"))]
+        out.append({"date": key, "rooms": rooms})
+    return out
+
+
+def event_done(e: dict[str, Any], now_date: date, now_hm: str = "") -> bool:
+    """빌드 시각 기준 이미 지난 항목인가 — 사이트가 취소선을 긋는다 (2026-09-17).
+
+    끝난 날(`end` 또는 `date`)이 오늘보다 앞이면 지났다. 오늘 것은 `time` 이 `HH:MM` 이고 `now_hm` 보다 앞일 때만.
+    '오후'·'점심' 같은 말로 된 시각은 비교하지 않는다 (지났다고 단정할 근거가 없다).
+    """
+    last = text(e.get("end")) or text(e.get("date"))
+    if not last or not _valid_date(last):
+        return False
+    if last < now_date.isoformat():
+        return True
+    if text(e.get("date")) == now_date.isoformat() and last == now_date.isoformat():
+        t = text(e.get("time"))
+        if now_hm and re.fullmatch(r"\d{2}:\d{2}", t) and re.fullmatch(r"\d{2}:\d{2}", now_hm):
+            return t < now_hm
+    return False
 
 
 def business_window(today: date, holidays: object = (), days: int = SCHEDULE_WINDOW_DAYS) -> tuple[date, date]:
@@ -557,12 +667,12 @@ def badge_short(badge: object) -> str:
 
 # 디렉터리 하나에 카드 여러 장 / 파일 하나가 카드 한 장
 CARD_DIRS = (("profile", "profiles"), ("project", "projects"))
-CARD_FILES = (("schedule", "schedule.json"), ("changelog", "changelog.json"))
+CARD_FILES = (("schedule", "schedule.json"), ("changelog", "changelog.json"), ("daily", "daily.json"))
 
 
 @dataclass
 class Card:
-    kind: str  # "profile" | "project" | "schedule" | "changelog"
+    kind: str  # "profile" | "project" | "schedule" | "changelog" | "daily"
     file: str  # 표시용 경로 (profiles/김동준.json · schedule.json)
     data: dict[str, Any] | None
     errors: list[str] = field(default_factory=list)
@@ -584,6 +694,8 @@ def _parse(kind: str, shown: str, raw: str) -> Card:
         errors = validate_project(data, stem)
     elif kind == "schedule":
         errors = validate_schedule(data)
+    elif kind == "daily":
+        errors = validate_daily(data)
     else:
         errors = validate_changelog(data)
     return Card(kind, shown, data if isinstance(data, dict) else None, errors)

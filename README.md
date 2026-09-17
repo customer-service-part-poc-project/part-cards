@@ -13,13 +13,15 @@
 ```
 part-wiki/data/profiles/*.json  사람 카드   ─┐
 part-wiki/data/projects/*.json  과제 카드   ─┤
-part-wiki/data/schedule.json    파트 일정   ─┼→ cards_data.py (검증) → build_site.py → _site/ → GitHub Pages
+part-wiki/data/daily.json       업무 요약   ─┼→ cards_data.py (검증) → build_site.py → _site/ → GitHub Pages
+part-wiki/data/schedule.json    파트 일정   ─┤
 part-wiki/data/changelog.json   최근 변경   ─┘
 ```
 
-목록 페이지의 섹션 순서는 **파트 일정 → 프로젝트 → 멤버 → 최근 변경** 이다. 곧 있을 일이 맨 위, 변경 이력은 줄 수가 많아 맨 아래 (2026-09-16).
-일정은 **업무일 2일**(빌드일 기준, 주말·휴일 제외), 변경은 **7일** 치만 그린다.
-`schedule.json` · `changelog.json` 은 각각 **파일 하나**이고, 없으면 그 섹션만 빈 상태로 나온다.
+목록 페이지의 섹션 순서는 **업무 요약 → 파트 일정 → 프로젝트 → 멤버 → 최근 변경** 이다. 어제·오늘 한 일이 맨 위, 곧 있을 일이 그 다음, 변경 이력은 줄 수가 많아 맨 아래 (2026-09-17).
+업무 요약은 `daily.json` 에서 **직전 업무일과 오늘** 두 날만 그린다 — 저녁에 봐도 아침에 봐도 덮이게. 요약이 없는 날은 "아직 없다"로 둔다.
+일정은 **오늘부터 업무일 3일**(오늘·내일·모레, 주말·휴일 제외)이고 **빌드 시각 기준 지난 항목은 취소선**을 긋는다. 변경은 **7일** 치만 그린다.
+`daily.json` · `schedule.json` · `changelog.json` 은 각각 **파일 하나**이고, 없으면 그 섹션만 빈 상태로 나온다.
 
 `.github/workflows/pages.yml` 은 part-wiki 가 보내는 `wiki-data-updated` 신호를 받으면 돈다 — 카드 데이터가 바뀐 순간에만 다시 그린다.
 그 밖에 매일 09:37 KST 안전망, 수동 실행(Actions → Run workflow), `scripts/` 변경 push 때도 돈다. 빌드 전에 `scripts/test_*.py` 를 먼저 돌린다.
@@ -36,9 +38,10 @@ part-wiki/data/changelog.json   최근 변경   ─┘
 
 ## 무엇이 나가나
 
-- 무엇을 싣고 뺄지는 part-wiki 의 `docs/PRIVACY.md` 와 스키마 네 장(`PROFILE_SCHEMA.md` · `PROJECT_SCHEMA.md` ·
-  `SCHEDULE_SCHEMA.md` · `CHANGELOG_SCHEMA.md`)이 정한다
+- 무엇을 싣고 뺄지는 part-wiki 의 `docs/PRIVACY.md` 와 스키마 다섯 장(`PROFILE_SCHEMA.md` · `PROJECT_SCHEMA.md` ·
+  `SCHEDULE_SCHEMA.md` · `CHANGELOG_SCHEMA.md` · `DAILY_SCHEMA.md`)이 정한다
 - 링크·전화번호·이메일·주민번호 형태·원문 인용 키가 있으면 **그 파일만** 건너뛰고 index 하단에 사유를 남긴다
+- **업무 요약** — 날짜별·파트 방별로 동기화 때 LLM 이 쓴 한 줄 요약 몇 개와 메시지 수. **원문 인용·링크·고객 정보 없음** (`DAILY_SCHEMA.md`)
 - **파트 일정** — 날짜·종류·한 줄 라벨·파트원 이름만. 근태는 구분만 적고 **사유는 싣지 않는다**. 회식은 장소·메뉴 없음
 - **최근 변경** — 어느 카드가 언제 무엇 때문에 바뀌었는지 한 줄. 위키 본문을 옮기지 않는다
 - **이모지 반응 집계는 싣지 않는다** — 데이터에 남아 있어도 카드에 그리지 않는다

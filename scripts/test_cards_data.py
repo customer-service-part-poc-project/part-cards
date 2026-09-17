@@ -130,6 +130,25 @@ def make_schedule() -> dict:
     }
 
 
+def make_daily() -> dict:
+    """docs/DAILY_SCHEMA.md 기준의 정상 업무 요약 — 어제(9/16)·오늘(9/17) 두 날."""
+    return {
+        "schema_version": 1,
+        "part": "고객서비스파트",
+        "generated": "2026-09-17",
+        "keep_days": 7,
+        "days": [
+            {"date": "2026-09-17", "rooms": [
+                {"room": "고객서비스파트", "count": 2, "items": ["공지: 스크럼 의제 공유"]},
+            ]},
+            {"date": "2026-09-16", "rooms": [
+                {"room": "고객서비스파트", "count": 7, "items": ["근태: 김민지 9/21(월)·9/23(수) 휴가", "근태: 이강민 9/23(수) 연차"]},
+                {"room": "평생보장소득", "count": 0, "items": []},
+            ]},
+        ],
+    }
+
+
 def make_changelog() -> dict:
     """docs/CHANGELOG_SCHEMA.md 기준의 정상 변경 목록."""
     return {
@@ -427,6 +446,82 @@ class ValidateScheduleTests(unittest.TestCase):
         self.assertTrue(any("금지 키" in e for e in self._errors(s)))
 
 
+class ValidateDailyTests(unittest.TestCase):
+    def test_정상이면_통과(self):
+        self.assertEqual(cards_data.validate_daily(make_daily()), [])
+
+    def test_날짜_필수이고_중복_금지(self):
+        d = make_daily()
+        del d["days"][0]["date"]
+        self.assertTrue(any("days[0].date" in e for e in cards_data.validate_daily(d)))
+        d = make_daily()
+        d["days"][1]["date"] = "2026-09-17"
+        self.assertTrue(any("두 번" in e for e in cards_data.validate_daily(d)))
+
+    def test_방_이름과_줄_형식(self):
+        d = make_daily()
+        r = d["days"][1]["rooms"]
+        r[0]["room"] = ""
+        r[0]["items"] = ["", 3]
+        r[1]["count"] = -1
+        errs = cards_data.validate_daily(d)
+        self.assertTrue(any("days[1].rooms[0].room" in e for e in errs))
+        self.assertEqual(sum("rooms[0].items[" in e for e in errs), 2)
+        self.assertTrue(any("rooms[1].count" in e for e in errs))
+
+    def test_링크가_있으면_거부(self):
+        d = make_daily()
+        d["days"][0]["rooms"][0]["items"].append("공지: https://example.com 참고")
+        self.assertTrue(any("URL" in e for e in cards_data.validate_daily(d)))
+
+    def test_줄_수_상한(self):
+        d = make_daily()
+        d["days"][0]["rooms"][0]["items"] = ["x"] * (cards_data.DAILY_MAX_ITEMS + 1)
+        self.assertTrue(any("items:" in e for e in cards_data.validate_daily(d)))
+
+    def test_days_가_없으면_빈_요약으로_통과(self):
+        d = make_daily()
+        del d["days"]
+        self.assertEqual(cards_data.validate_daily(d), [])
+
+
+class DailyDaysTests(unittest.TestCase):
+    """업무 요약 카드는 오늘과 직전 업무일, 두 날만 그린다 (2026-09-17)."""
+
+    def test_오늘_먼저_그다음_직전_업무일(self):
+        got = cards_data.daily_days(make_daily(), THU)
+        self.assertEqual([d["date"] for d in got], ["2026-09-17", "2026-09-16"])
+        self.assertEqual(len(got[1]["rooms"]), 2)
+
+    def test_월요일의_직전_업무일은_금요일이고_없는_날은_빈_블록(self):
+        got = cards_data.daily_days(make_daily(), MON)
+        self.assertEqual([(d["date"], len(d["rooms"])) for d in got], [("2026-09-21", 0), ("2026-09-18", 0)])
+
+    def test_휴일을_건너뛴다(self):
+        self.assertEqual(cards_data.prev_business_day(THU, ["2026-09-16"]), datetime.date(2026, 9, 15))
+
+    def test_파일이_없어도_두_날(self):
+        self.assertEqual(len(cards_data.daily_days(None, THU)), 2)
+
+
+class EventDoneTests(unittest.TestCase):
+    def test_끝난_날이_오늘보다_앞이면_지났다(self):
+        self.assertTrue(cards_data.event_done({"date": "2026-09-16", "end": ""}, THU))
+        self.assertTrue(cards_data.event_done({"date": "2026-09-14", "end": "2026-09-16"}, THU))
+
+    def test_오늘_것은_시각이_지났을_때만(self):
+        self.assertTrue(cards_data.event_done({"date": "2026-09-17", "end": "", "time": "10:30"}, THU, "11:00"))
+        self.assertFalse(cards_data.event_done({"date": "2026-09-17", "end": "", "time": "10:30"}, THU, "09:00"))
+        self.assertFalse(cards_data.event_done({"date": "2026-09-17", "end": "", "time": "10:30"}, THU, ""))
+
+    def test_말로_된_시각과_종일은_긋지_않는다(self):
+        self.assertFalse(cards_data.event_done({"date": "2026-09-17", "end": "", "time": "오후"}, THU, "23:00"))
+        self.assertFalse(cards_data.event_done({"date": "2026-09-17", "end": "", "time": ""}, THU, "23:00"))
+
+    def test_진행_중인_기간은_지난_게_아니다(self):
+        self.assertFalse(cards_data.event_done({"date": "2026-09-16", "end": "2026-09-18", "time": ""}, THU, "23:00"))
+
+
 class ValidateChangelogTests(unittest.TestCase):
     """docs/CHANGELOG_SCHEMA.md '검증'."""
 
@@ -643,25 +738,82 @@ class RenderIndexTests(unittest.TestCase):
             "schedule": make_schedule(),
             "changelog": make_changelog(),
             "today": THU,
+            "daily": make_daily(),
         }
         args.update(kw)
         return build_site.render_index(**args)
 
-    def test_섹션_순서는_일정_프로젝트_멤버_변경(self):
+    def test_섹션_순서는_오늘요약_일정_프로젝트_멤버_변경(self):
         h = self._index()
-        order = [h.index(f"sec {cls}") for cls in ("sec-sched", "sec-proj", "sec-members", "sec-changes")]
+        order = [h.index(f"sec {cls}") for cls in ("sec-daily", "sec-sched", "sec-proj", "sec-members", "sec-changes")]
         self.assertEqual(order, sorted(order))
 
     def test_히어로_칩에_건수가_붙는다(self):
-        """이벤트 2건 + 목요일에 펴진 스크럼 1건 = 3건. 스크럼은 월~목이라 금요일에는 없다."""
+        """목요일 빌드 → 창은 목·금·월. 스크럼 의제(목) + 본부장 보고(목~금) + 스크럼 목·월 = 4건."""
         h = self._index()
-        self.assertIn("<b>일정</b>3건", h)
+        self.assertIn("<b>일정</b>4건", h)
         self.assertIn("<b>변경</b>3건", h)
+
+    def test_일정은_오늘부터_사흘이고_오늘_표시(self):
+        sched = self._sched_part()
+        self.assertIn("스크럼 의제", sched)
+        self.assertIn('<span class="today">오늘</span>', sched)
+        self.assertIn("본부장 보고", sched)
+
+    def _sched_part(self, **kw) -> str:
+        h = self._index(**kw)
+        return h[h.index("sec sec-sched"):h.index("sec sec-proj")]
+
+    def test_지난_일정은_취소선(self):
+        """빌드 시각 11:00 → 10:30 스크럼 의제는 지났고, 시각이 없는 본부장 보고는 안 지났다."""
+        sched = self._sched_part(now_hm="11:00")
+        li = sched[sched.index("스크럼 의제") - 400:sched.index("스크럼 의제")]
+        self.assertIn('<li class="done">', li)
+        self.assertIn('<span class="did">지남</span>', sched)
+        self.assertNotIn("본부장 보고</span><span class=\"did\">", sched)
+        self.assertIn("text-decoration:line-through", self._index())
+
+    def test_빌드_시각이_없으면_오늘_것은_긋지_않는다(self):
+        self.assertNotIn('class="done"', self._sched_part())
+
+    def test_어제_시작한_기간_일정은_진행_중이지_지난_게_아니다(self):
+        sched = make_schedule()
+        sched["events"].append({"date": "2026-09-16", "end": "2026-09-18", "kind": "근태", "label": "휴가", "members": []})
+        part = self._sched_part(schedule=sched, now_hm="18:00")
+        self.assertIn("휴가", part)
+        self.assertIn('<span class="on">진행 중</span>', part)
+        self.assertEqual(part.count('<li class="done">'), 1)  # 스크럼 의제만
 
     def test_일정이_없으면_빈_상태_문구(self):
         h = self._index(schedule=None)
-        self.assertIn("업무일 2일 안에 잡힌 일정이 없다", h)
+        self.assertIn("업무일 3일 안에 잡힌 일정이 없다", h)
         self.assertIn("<b>일정</b>0건", h)
+
+    def test_업무_요약은_오늘과_직전_업무일_두_날(self):
+        h = self._index()
+        part = h[h.index("sec sec-daily"):h.index("sec sec-sched")]
+        self.assertIn("업무 요약", part)
+        self.assertLess(part.index("9/17(목)"), part.index("9/16(수)"))  # 오늘 먼저
+        self.assertIn('<div class="droom-head">고객서비스파트<span class="dcount">메시지 7건</span></div>', part)
+        self.assertIn("<li>근태: 김민지 9/21(월)·9/23(수) 휴가</li>", part)
+        self.assertIn("<li>공지: 스크럼 의제 공유</li>", part)
+        self.assertIn('<li class="empty">올라온 메시지 없음</li>', part)  # 평생보장소득 0건
+        self.assertNotIn("9/15", part)
+
+    def test_월요일에는_금요일과_월요일(self):
+        d = make_daily()
+        d["days"] = [{"date": "2026-09-18", "rooms": [{"room": "고객서비스파트", "count": 1, "items": ["금요일 줄"]}]}]
+        h = self._index(today=MON, daily=d)
+        part = h[h.index("sec sec-daily"):h.index("sec sec-sched")]
+        self.assertIn("9/18(금)", part)
+        self.assertIn("금요일 줄", part)
+        self.assertIn("9/21(월)", part)
+        self.assertIn("요약이 아직 없다", part)  # 월요일 것은 아직
+
+    def test_요약_파일이_없어도_섹션은_있다(self):
+        h = self._index(daily=None)
+        self.assertIn("sec-daily", h)
+        self.assertEqual(h.count("요약이 아직 없다"), 2)
 
     def test_변경이_없으면_빈_상태_문구(self):
         h = self._index(changelog=None)
@@ -669,7 +821,8 @@ class RenderIndexTests(unittest.TestCase):
         self.assertIn("<b>변경</b>0건", h)
 
     def test_창_범위를_부제에_적는다(self):
-        self.assertIn("9/17(목) ~ 9/18(금) · 업무일 2일", self._index())
+        """목요일 빌드 → 오늘부터 업무일 3일 = 목·금·월."""
+        self.assertIn("9/17(목) ~ 9/21(월) · 업무일 3일", self._index())
 
     def test_기간_일정은_시작과_끝을_다_적고_진행_중을_표시한다(self):
         sched = make_schedule()
@@ -680,9 +833,10 @@ class RenderIndexTests(unittest.TestCase):
 
     def test_창_안_휴일은_휴무로_적는다(self):
         sched = make_schedule()
-        sched["holidays"] = ["2026-09-18"]
+        sched["holidays"] = ["2026-09-18"]  # 창 목·월·화 안의 금요일
         h = self._index(schedule=sched)
         self.assertIn("휴무: 9/18(금)", h)
+        self.assertIn("9/17(목) ~ 9/22(화)", h)
 
     def test_오늘_날짜_그룹에_오늘_표시(self):
         self.assertIn('<span class="today">오늘</span>', self._index())
@@ -805,7 +959,7 @@ class MainApiErrorTests(unittest.TestCase):
 
 
 class LoadLocalCardFilesTests(unittest.TestCase):
-    """schedule.json·changelog.json 은 파일 하나가 카드 하나다. 없으면 없는 대로 간다."""
+    """schedule.json·changelog.json·daily.json 은 파일 하나가 카드 하나다. 없으면 없는 대로 간다."""
 
     def _root(self, files: dict[str, str]) -> pathlib.Path:
         root = pathlib.Path(tempfile.mkdtemp())
@@ -830,6 +984,16 @@ class LoadLocalCardFilesTests(unittest.TestCase):
         self.assertEqual(sorted(got), ["changelog", "schedule"])
         self.assertEqual(got["schedule"].file, "schedule.json")
         self.assertTrue(got["schedule"].ok and got["changelog"].ok)
+
+    def test_daily_json_도_카드_하나로_읽는다(self):
+        root = self._root({"daily.json": json.dumps(make_daily(), ensure_ascii=False)})
+        got = {c.kind: c for c in cards_data.load_local(root)}
+        self.assertEqual(sorted(got), ["daily"])
+        self.assertTrue(got["daily"].ok)
+        bad = make_daily()
+        bad["days"][0]["rooms"][0]["items"] = ["전화 010-1234-5678"]
+        root = self._root({"daily.json": json.dumps(bad, ensure_ascii=False)})
+        self.assertFalse(cards_data.load_local(root)[0].ok)
 
     def test_어긋나면_그_파일만_건너뛴다(self):
         bad = make_schedule()

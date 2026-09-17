@@ -42,12 +42,14 @@ from cards_data import (  # noqa: E402
     KST,
     MILESTONE_STATES,
     PROJECT_STATUS_ORDER,
-    SCHEDULE_WINDOW_DAYS,
     Card,
     GitHub,
     badge_short,
+    SITE_SCHEDULE_DAYS,
     business_window,
+    daily_days,
     entries_within,
+    event_done,
     events_in_window,
     load_local,
     load_remote,
@@ -94,7 +96,8 @@ EVENT_KIND_CLASS = {
     "기타": "ek-etc",
 }
 CHANGES_EMPTY = f"최근 {CHANGELOG_KEEP_DAYS}일간 바뀐 카드가 없다"
-SCHEDULE_EMPTY = f"업무일 {SCHEDULE_WINDOW_DAYS}일 안에 잡힌 일정이 없다"
+SCHEDULE_EMPTY = f"업무일 {SITE_SCHEDULE_DAYS}일 안에 잡힌 일정이 없다"
+DAILY_EMPTY = "요약이 아직 없다 — 동기화가 돌면 채워진다"
 
 
 # ───────────────────────────────────────────────────────────────────────── 유틸
@@ -406,6 +409,22 @@ a.mem:hover{border-color:var(--brand70);color:var(--brand-ink)}
 .today{font-size:10.5px;font-weight:800;padding:2px 8px;border-radius:999px;background:var(--brand);color:#fff;
   letter-spacing:0}
 
+/* 업무 요약 */
+.sec-daily{color:var(--ink);margin-top:36px}
+.sec-daily .sectag{background:var(--brand);color:#fff}
+.dday+.dday{margin-top:15px;padding-top:15px;border-top:1px solid var(--line2)}
+.ddate{display:flex;align-items:baseline;gap:8px;font-size:13px;font-weight:800;color:var(--ink);
+  margin-bottom:9px;font-variant-numeric:tabular-nums}
+.droom+.droom{margin-top:10px}
+.droom-head{display:flex;align-items:baseline;gap:8px;font-size:12.5px;font-weight:700;color:var(--ink2);margin-bottom:6px}
+.dcount{font-size:11.5px;font-weight:700;color:var(--muted)}
+.dlist{list-style:none;padding:0;margin:0}
+.dlist li{position:relative;padding-left:16px;margin:0 0 8px;font-size:13.5px;line-height:1.55;color:var(--ink2);
+  word-break:keep-all;overflow-wrap:anywhere}
+.dlist li:last-child{margin-bottom:0}
+.dlist li::before{content:"";position:absolute;left:2px;top:.62em;width:6px;height:6px;border-radius:50%;background:var(--brand)}
+.dlast{font-size:12.5px;color:var(--muted);margin-top:8px}
+
 /* 파트 일정 */
 .sec-sched{color:var(--ink);margin-top:36px}
 .sec-sched .sectag{background:var(--brand-soft);color:var(--brand-ink)}
@@ -416,6 +435,11 @@ a.mem:hover{border-color:var(--brand70);color:var(--brand-ink)}
 .slist li{display:flex;flex-wrap:wrap;align-items:baseline;gap:9px;margin:0 0 10px;font-size:13.5px;line-height:1.55}
 .slist li:last-child{margin-bottom:0}
 .slist li.rec{color:var(--ink2)}
+.slist li.done{opacity:.55}
+.slist li.done .evlabel,.slist li.done .evtime{text-decoration:line-through;text-decoration-thickness:2px;
+  text-decoration-color:var(--brand)}
+.slist li.done .ek{background:var(--soft);border-color:var(--line);color:var(--muted)}
+.did{font-size:10.5px;font-weight:800;color:var(--muted);white-space:nowrap}
 .evtime{font-variant-numeric:tabular-nums;font-weight:800;color:var(--brand-ink);font-size:12.5px;
   min-width:44px;white-space:nowrap}
 .ek{font-size:11px;font-weight:800;padding:2px 9px;border-radius:999px;white-space:nowrap;
@@ -975,7 +999,8 @@ def event_members_html(names: list[str], member_hrefs: dict[str, str]) -> str:
     return "".join(chips)
 
 
-def schedule_html(events: list[dict[str, Any]], today: date, member_hrefs: dict[str, str]) -> str:
+def schedule_html(events: list[dict[str, Any]], today: date, member_hrefs: dict[str, str], now_hm: str = "") -> str:
+    """지난 항목(`event_done`)은 `li.done` 으로 취소선을 긋는다 — 저녁에 봐도 남은 일이 한눈에 보이게 (2026-09-17)."""
     if not events:
         return card("", f'<p class="empty">{esc(SCHEDULE_EMPTY)}</p>')
     blocks = []
@@ -983,19 +1008,23 @@ def schedule_html(events: list[dict[str, Any]], today: date, member_hrefs: dict[
         lis = []
         for e in items:
             kind = e["kind"]
+            done = event_done(e, today, now_hm)
             row = f'<span class="evtime">{esc(e["time"])}</span>' if e["time"] else ""
             row += f'<span class="ek {EVENT_KIND_CLASS.get(kind, "ek-etc")}">{esc(kind)}</span>'
             row += f'<span class="evlabel">{esc(e["label"])}</span>'
             row += event_members_html(e["members"], member_hrefs)
             if e["end"]:  # events_in_window 가 하루짜리는 이미 비워 준다 — 기간은 시작~끝을 다 적는다
                 row += f'<span class="evspan">{esc(fmt_day_str(day))}~{esc(fmt_day_str(e["end"]))}</span>'
-            if e.get("ongoing"):
+            if done:
+                row += '<span class="did">지남</span>'
+            elif e.get("ongoing"):
                 row += '<span class="on">진행 중</span>'
             if e["recurring"]:
                 row += '<span class="evrepeat">매주</span>'
             if e["note"]:
                 row += f'<span class="evnote">{esc(e["note"])}</span>'
-            lis.append(f'<li class="{"rec" if e["recurring"] else ""}">{row}</li>')
+            cls = " ".join(c for c in (("rec" if e["recurring"] else ""), ("done" if done else "")) if c)
+            lis.append(f'<li class="{cls}">{row}</li>')
         head = f'<div class="sdate">{esc(fmt_day_str(day))}{_today_mark(day, today)}</div>'
         blocks.append(f'<div class="sday">{head}<ul class="slist">{"".join(lis)}</ul></div>')
     return f'<div class="card">{"".join(blocks)}</div>'
@@ -1007,6 +1036,26 @@ def holiday_note(schedule: dict[str, Any] | None, start: date, end: date) -> str
     if not hs:
         return ""
     return f'<div class="note">휴무: {esc(" · ".join(fmt_day_str(h) for h in hs))} — 업무일 계산에서 뺐다.</div>'
+
+
+def daily_html(daily: dict[str, Any] | None, today: date, holidays: object = ()) -> str:
+    """업무 요약 — 오늘과 직전 업무일, 날마다 방 블록. 요약이 없는 날은 그 날만 빈 상태로 둔다."""
+    blocks = []
+    for d in daily_days(daily, today, holidays):
+        day = d["date"]
+        head = f'<div class="ddate">{esc(fmt_day_str(day))}{_today_mark(day, today)}</div>'
+        rooms = []
+        for r in d["rooms"]:
+            items = [text(i) for i in (r.get("items") or []) if text(i)]
+            rh = (
+                f'<div class="droom-head">{esc(text(r.get("room")))}'
+                f'<span class="dcount">메시지 {esc(fmt_int(r.get("count", 0)))}건</span></div>'
+            )
+            lis = "".join(f"<li>{esc(i)}</li>" for i in items) or '<li class="empty">올라온 메시지 없음</li>'
+            rooms.append(f'<div class="droom">{rh}<ul class="dlist">{lis}</ul></div>')
+        body = "".join(rooms) or f'<p class="empty" style="margin:0">{esc(DAILY_EMPTY)}</p>'
+        blocks.append(f'<div class="dday">{head}{body}</div>')
+    return f'<div class="card">{"".join(blocks)}</div>'
 
 
 # ───────────────────────────────────────────────────────────────────── 목록·빌드
@@ -1022,17 +1071,21 @@ def render_index(
     schedule: dict[str, Any] | None = None,
     changelog: dict[str, Any] | None = None,
     today: date | None = None,
+    daily: dict[str, Any] | None = None,
+    now_hm: str = "",
 ) -> str:
-    """목록 페이지. 섹션 순서는 최근 변경 → 파트 일정 → 프로젝트 → 멤버.
+    """목록 페이지. 섹션 순서는 업무 요약 → 파트 일정 → 프로젝트 → 멤버 → 최근 변경.
 
-    `today` 는 업무일 2일 창과 최근 7일 창의 기준일이다 (기본 KST 오늘). 테스트가 날짜를 고정한다.
+    `today` 는 업무 요약(직전 업무일·오늘)·파트 일정(오늘부터 업무일 3일)·최근 7일 창의 기준일이다 (기본 KST 오늘).
+    `now_hm` 은 빌드 시각 `HH:MM` — 오늘 일정 중 지난 항목에 취소선을 긋는 기준. 비우면 날짜만 본다. 테스트가 날짜를 고정한다.
     """
     today = today or datetime.now(KST).date()
     member_hrefs = {text(d.get("name")): href_for("m", d) for d in profiles}
     project_hrefs = {text(d.get("name")): href_for("p", d) for d in projects}
-    events = events_in_window(schedule, today) if schedule else []
+    holidays = str_list((schedule or {}).get("holidays"))
+    events = events_in_window(schedule, today, SITE_SCHEDULE_DAYS) if schedule else []
     changes = entries_within(changelog, today) if changelog else []
-    win_start, win_end = business_window(today, str_list((schedule or {}).get("holidays")))
+    win_start, win_end = business_window(today, holidays, SITE_SCHEDULE_DAYS)
 
     chips = [f'<span class="chip"><b>멤버</b>{len(profiles)}명</span>', f'<span class="chip"><b>프로젝트</b>{len(projects)}건</span>']
     chips.append(f'<span class="chip"><b>일정</b>{len(events)}건</span>')
@@ -1045,10 +1098,10 @@ def render_index(
         chips.append(f'<span class="chip"><b>표본 부족</b>{low_n}명</span>')
     hero = (
         '<header class="hero"><span class="tri" aria-hidden="true"></span><div class="in">'
-        '<div class="hero-eyebrow">최근 변경 · 파트 일정 · 프로젝트 · 멤버</div>'
+        '<div class="hero-eyebrow">업무 요약 · 파트 일정 · 프로젝트 · 멤버 · 최근 변경</div>'
         f'<h1 class="hero-title">{esc(part)}</h1>'
-        f"<div class=\"hero-sub\">최근 {CHANGELOG_KEEP_DAYS}일간 바뀐 카드와 업무일 {SCHEDULE_WINDOW_DAYS}일 안의 파트 일정, "
-        "진행 중인 과제 요약, 파트 텔레그램 방에서 집계한 말투 신호로 만든 파트원 카드. "
+        f"<div class=\"hero-sub\">어제와 오늘 파트 방에 오간 일의 요약과 업무일 {SITE_SCHEDULE_DAYS}일 안의 파트 일정, "
+        f"진행 중인 과제 요약, 파트 텔레그램 방에서 집계한 말투 신호로 만든 파트원 카드, 최근 {CHANGELOG_KEEP_DAYS}일간 바뀐 카드. "
         "위키 본문과 원본 대화는 여기에 실리지 않는다.</div>"
         f'<div class="hero-chips">{"".join(chips)}</div></div></header>'
     )
@@ -1057,10 +1110,15 @@ def render_index(
         changes_html(changes, today, {"profile": member_hrefs, "project": project_hrefs}),
         "카드가 언제 무엇 때문에 바뀌었나",
     )
+    s_daily = sec(
+        "sec-daily", "어제 · 오늘", "업무 요약",
+        daily_html(daily, today, holidays),
+        "직전 업무일과 오늘 · 파트 방에 오간 일을 동기화 때 한 줄씩 요약 · 원문은 싣지 않는다",
+    )
     s_sched = sec(
-        "sec-sched", f"업무일 {SCHEDULE_WINDOW_DAYS}일", "파트 일정",
-        schedule_html(events, today, member_hrefs) + holiday_note(schedule, win_start, win_end),
-        f"{fmt_day(win_start)} ~ {fmt_day(win_end)} · 업무일 {SCHEDULE_WINDOW_DAYS}일"
+        "sec-sched", f"업무일 {SITE_SCHEDULE_DAYS}일", "파트 일정",
+        schedule_html(events, today, member_hrefs, now_hm) + holiday_note(schedule, win_start, win_end),
+        f"{fmt_day(win_start)} ~ {fmt_day(win_end)} · 업무일 {SITE_SCHEDULE_DAYS}일 · 지난 일정은 취소선"
         + (f" · 데이터 기준 {esc(text(schedule.get('generated')))}" if schedule and text(schedule.get("generated")) else ""),
     )
     if profiles:
@@ -1080,7 +1138,7 @@ def render_index(
             f'<div class="warnbox skips"><h3>검증에서 건너뛴 파일 {len(skipped)}건</h3><ul>{items}</ul>'
             '<p style="margin-top:9px">한 건 때문에 전체가 막히지 않도록 그 파일만 빼고 빌드했다. 고치면 다음 빌드에 다시 들어온다.</p></div>'
         )
-    body = hero + banner_html() + '<main class="wrap">' + s_sched + s_projects + s_members + s_changes + skips + footer_html(part, built) + "</main>"
+    body = hero + banner_html() + '<main class="wrap">' + s_daily + s_sched + s_projects + s_members + s_changes + skips + footer_html(part, built) + "</main>"
     return html_doc(f"{part} 멤버 프로필 · 프로젝트", body)
 
 
@@ -1097,6 +1155,7 @@ def build(cards: list[Card], out_dir: Path) -> None:
     projects = sorted([c.data for c in cards if c.ok and c.kind == "project" and c.data is not None], key=_project_key)
     schedule = next((c.data for c in cards if c.ok and c.kind == "schedule" and c.data is not None), None)
     changelog = next((c.data for c in cards if c.ok and c.kind == "changelog" and c.data is not None), None)
+    daily = next((c.data for c in cards if c.ok and c.kind == "daily" and c.data is not None), None)
     skipped = [c for c in cards if not c.ok]
     part = next((text(d.get("part")) for d in profiles + projects if text(d.get("part"))), DEFAULT_PART)
     generated = max((text(d.get("generated")) for d in profiles + projects), default="")
@@ -1111,14 +1170,15 @@ def build(cards: list[Card], out_dir: Path) -> None:
         (out_dir / "m" / f"{text(d.get('name'))}.html").write_text(render_person(d, built), encoding="utf-8")
     for d in projects:
         (out_dir / "p" / f"{text(d.get('name'))}.html").write_text(render_project(d, built, member_hrefs), encoding="utf-8")
-    index = render_index(profiles, projects, skipped, part, built, generated, schedule, changelog, today)
+    index = render_index(profiles, projects, skipped, part, built, generated, schedule, changelog, today, daily, now.strftime("%H:%M"))
     (out_dir / "index.html").write_text(index, encoding="utf-8")
     (out_dir / ".nojekyll").write_text("", encoding="utf-8")  # Jekyll 후처리 방지
-    n_events = len(events_in_window(schedule, today)) if schedule else 0
+    n_events = len(events_in_window(schedule, today, SITE_SCHEDULE_DAYS)) if schedule else 0
     n_changes = len(entries_within(changelog, today)) if changelog else 0
+    n_daily = sum(len(r.get("items") or []) for d in daily_days(daily, today, str_list((schedule or {}).get("holidays"))) for r in d["rooms"])
     print(
         f"{out_dir}/index.html 생성 — 멤버 {len(profiles)}명 · 프로젝트 {len(projects)}건 · "
-        f"일정 {n_events}건 · 변경 {n_changes}건 · 건너뜀 {len(skipped)}건",
+        f"업무 요약 {n_daily}줄 · 일정 {n_events}건 · 변경 {n_changes}건 · 건너뜀 {len(skipped)}건",
         file=sys.stderr,
     )
 
