@@ -494,11 +494,11 @@ def prev_business_day(d: date, holidays: object = ()) -> date:
 
 
 def daily_days(daily: object, today: date, holidays: object = ()) -> list[dict[str, Any]]:
-    """업무 요약 카드에 그릴 날들 — **직전 업무일과 오늘**, 오늘이 먼저. 요약이 없는 날도 빈 블록으로 돌려준다."""
+    """업무 요약 카드에 그릴 날들 — **직전 업무일과 오늘**, 어제가 먼저·오늘이 아래 (시간순, 2026-09-17). 요약이 없는 날도 빈 블록으로 돌려준다."""
     d = daily if isinstance(daily, dict) else {}
     by_date = {text(x.get("date")): x for x in (d.get("days") or []) if isinstance(x, dict) and text(x.get("date"))}
     out = []
-    for day in (today, prev_business_day(today, holidays)):
+    for day in (prev_business_day(today, holidays), today):
         key = day.isoformat()
         src = by_date.get(key) or {}
         rooms = [r for r in (src.get("rooms") or []) if isinstance(r, dict) and text(r.get("room"))]

@@ -488,14 +488,14 @@ class ValidateDailyTests(unittest.TestCase):
 class DailyDaysTests(unittest.TestCase):
     """업무 요약 카드는 오늘과 직전 업무일, 두 날만 그린다 (2026-09-17)."""
 
-    def test_오늘_먼저_그다음_직전_업무일(self):
+    def test_직전_업무일_먼저_그다음_오늘(self):
         got = cards_data.daily_days(make_daily(), THU)
-        self.assertEqual([d["date"] for d in got], ["2026-09-17", "2026-09-16"])
-        self.assertEqual(len(got[1]["rooms"]), 2)
+        self.assertEqual([d["date"] for d in got], ["2026-09-16", "2026-09-17"])
+        self.assertEqual(len(got[0]["rooms"]), 2)
 
     def test_월요일의_직전_업무일은_금요일이고_없는_날은_빈_블록(self):
         got = cards_data.daily_days(make_daily(), MON)
-        self.assertEqual([(d["date"], len(d["rooms"])) for d in got], [("2026-09-21", 0), ("2026-09-18", 0)])
+        self.assertEqual([(d["date"], len(d["rooms"])) for d in got], [("2026-09-18", 0), ("2026-09-21", 0)])
 
     def test_휴일을_건너뛴다(self):
         self.assertEqual(cards_data.prev_business_day(THU, ["2026-09-16"]), datetime.date(2026, 9, 15))
@@ -793,7 +793,7 @@ class RenderIndexTests(unittest.TestCase):
         h = self._index()
         part = h[h.index("sec sec-daily"):h.index("sec sec-sched")]
         self.assertIn("업무 요약", part)
-        self.assertLess(part.index("9/17(목)"), part.index("9/16(수)"))  # 오늘 먼저
+        self.assertLess(part.index("9/16(수)"), part.index("9/17(목)"))  # 어제 먼저, 오늘이 아래
         self.assertIn('<div class="droom-head">고객서비스파트<span class="dcount">메시지 7건</span></div>', part)
         self.assertIn("<li>근태: 김민지 9/21(월)·9/23(수) 휴가</li>", part)
         self.assertIn("<li>공지: 스크럼 의제 공유</li>", part)
